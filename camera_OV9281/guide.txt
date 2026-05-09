@@ -1,0 +1,45 @@
+Sensor: OV9281 camera module
+Type: Global shutter (black & white only)
+Interface: USB 2.0 UVC (webcam standard)
+
+No driver needed (Windows/Linux/macOS/Android)
+Output formats: MJPEG / YUY2
+
+Resolution:
+1280×720 @ 60fps (MJPEG)
+1280×720 @ 10fps (YUY2)
+
+
+
+
+Camera  View 
+
+Open Camera App | OBS studio | VLC
+
+
+ check powershell
+Get-PnpDevice -Class Camera
+ or 
+Get-CimInstance Win32_PnPEntity | Where-Object {$_.Name -like "*USB*"}
+
+
+
+
+python
+
+import cv2
+
+cap = cv2.VideoCapture(0)
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    cv2.imshow("OV9281 Live View", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()

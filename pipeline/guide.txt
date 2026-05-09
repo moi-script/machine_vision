@@ -1,0 +1,31 @@
+
+OpenCV capture → YOLO inference → draw outputs → frame control → optimization
+
+
+
+
+
+
+
+Stage 1: Capture
+OpenCV reads frames from camera (USB UVC)
+
+
+Stage 2: Preprocessing
+resize frames (optional)
+normalize / convert format
+maybe grayscale (your camera already is)
+
+
+Stage 3: Inference
+YOLO model runs detection (shuttle, player, racket)
+
+
+Stage 4: Post-processing
+draw bounding boxes
+filter detections
+track objects
+
+
+Stage 5: Output
+display / stream / save

@@ -1,0 +1,6 @@
+
+Megapixels	Resolution	Pixels Dimensions (width x height)
+0.3MP	240p	640 x 480
+0.5MP	360p	640 x 360
+0.9MP	480p	858 x 480
+1MP	    720p	1280 x 720

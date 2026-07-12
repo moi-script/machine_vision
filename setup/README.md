@@ -4,8 +4,8 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                     CAMERA (Side View)                  │
-│                   OV9281 USB Grayscale                  │
+│           CAMERA (feeder-mounted, end-on)               │
+│      OV9281 grayscale — looking across the net          │
 └───────────────────────┬─────────────────────────────────┘
                         │ frame
           ┌─────────────┴──────────────┐
@@ -22,17 +22,18 @@
          │                             │
          ▼                             ▼
 ┌─────────────────────────────────────────────────────────┐
-│              COURT ZONE FILTER (hardcoded)              │
-│  COURT_ZONE = (x1, y1, x2, y2)  ← set in settings.py  │
-│  Only players with 60%+ overlap inside zone counted     │
+│           COURT-SPACE HOMOGRAPHY (utils/zones.py)       │
+│  4 corners COURT_CORNERS → top-down court (cv2)         │
+│  pixel (x,y) → court (cx,cy): net=cy≈0, baseline=cy≈L   │
+│  in_court_bounds() keeps trainee half (feeder → cy<0)   │
 └───────────────────────┬─────────────────────────────────┘
                         │
                         ▼
 ┌─────────────────────────────────────────────────────────┐
 │                  PLAYER TRACKING                        │
 │  persist=True → each player keeps same ID even         │
-│  when they swap left/right positions                    │
-│  Ankle position → which of 6 zones player is in        │
+│  as they move around the court                          │
+│  ankle → court (cx,cy) → which of the 6 zones           │
 └───────────────────────┬─────────────────────────────────┘
                         │
                         ▼
@@ -47,14 +48,14 @@
                         │
                         ▼
 ┌─────────────────────────────────────────────────────────┐
-│              SHUTTLE TRACKING (net crossing)            │
+│         SHUTTLE TRACKING (net crossing, court space)   │
 │                                                         │
-│  shuttle_x > NET_X → feeder side                        │
-│  shuttle_x < NET_X → player side                        │
+│  get_shuttle_side(cy): cy < −NET_DEADBAND → feeder      │
+│                        else → player                    │
 │                                                         │
-│  Crossing detected:                                     │
-│    prev_x > NET_X AND current_x < NET_X                 │
-│    → capture (x, y) → match to zone                     │
+│  crossed_net(prev_cy, cy): feeder→player sign flip      │
+│    past the dead-band                                   │
+│    → zone = get_zone_from_position(cx, cy)              │
 │    → confirm player ID in that zone                     │
 └───────────────────────┬─────────────────────────────────┘
                         │
@@ -81,7 +82,7 @@
 │                  DISPLAY OVERLAY                        │
 │                                                         │
 │  - Court boundary box                                   │
-│  - Net line (NET_X)                                     │
+│  - Net segment + 6-zone grid (projected trapezoids)    │
 │  - 6 zone grid (active zone highlighted)                │
 │  - Player skeleton + ID label                           │
 │  - Shuttle position + trail                             │
@@ -94,13 +95,13 @@
 │              END OF DRILL ASSESSMENT                    │
 │                                                         │
 │  Player 1  |  7/10 (70%)                               │
-│    back_left   3/4   75%                                │
-│    back_right  0/2    0%  ← weak!                       │
-│    mid_center  4/4  100%                                │
+│    front_left   3/4   75%                               │
+│    back_right   0/2    0%  ← weak!                      │
+│    back_center  4/4  100%                               │
 │                                                         │
 │  Player 2  |  5/10 (50%)                               │
-│    back_mid    0/3    0%  ← weak!                       │
-│    mid_right   3/4   75%                                │
+│    front_center 0/3    0%  ← weak!                      │
+│    front_right  3/4   75%                               │
 └─────────────────────────────────────────────────────────┘
 ```
 

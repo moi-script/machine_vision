@@ -1,0 +1,10 @@
+# Core computer-vision + detection stack
+ultralytics
+opencv-python
+numpy
+lap          # required by ultralytics .track() (player tracking)
+
+# Roboflow serverless Workflow client (shuttlecock detection)
+# Called over plain REST — see utils/roboflow_client.py
+# (the official inference-sdk does not yet support Python 3.13)
+requests

@@ -2,10 +2,69 @@
 # zones.py — Court zone detection and player-zone matching
 # ============================================================
 
+import cv2
+import numpy as np
+
 from config.settings import (
     PLAYER_ZONES, NET_X, COURT_ZONE,
-    ANKLE_CONFIDENCE, PLAYER_OVERLAP_RATIO
+    ANKLE_CONFIDENCE, PLAYER_OVERLAP_RATIO,
+    COURT_CORNERS, COURT_W, COURT_L, NET_DEADBAND,
 )
+
+# ── Homography (image pixels <-> top-down court space) ───────
+_H = None       # pixel -> court
+_H_inv = None   # court -> pixel
+
+
+def _canonical_rect():
+    return np.array(
+        [[0.0, 0.0], [COURT_W, 0.0], [COURT_W, COURT_L], [0.0, COURT_L]],
+        dtype=np.float32,
+    )
+
+
+def build_homography(corners=None):
+    """
+    Build (and cache) the pixel->court homography from 4 court corners in
+    order [net_left, net_right, baseline_right, baseline_left]. Falls back to
+    settings.COURT_CORNERS. Raises ValueError if unset or degenerate.
+    """
+    global _H, _H_inv
+    corners = corners if corners is not None else COURT_CORNERS
+    if not corners or len(corners) != 4:
+        raise ValueError(
+            "COURT_CORNERS not set (need 4 points) — run calibrate.py first."
+        )
+    src = np.array(corners, dtype=np.float32)
+    try:
+        _H = cv2.getPerspectiveTransform(src, _canonical_rect())
+        _H_inv = np.linalg.inv(_H)
+    except (cv2.error, np.linalg.LinAlgError) as exc:
+        raise ValueError(
+            f"Court corners look degenerate — re-run calibration. ({exc})"
+        )
+    return _H
+
+
+def _ensure_homography():
+    if _H is None:
+        build_homography()
+
+
+def to_court(pt):
+    """Pixel (x, y) -> court (cx, cy)."""
+    _ensure_homography()
+    p = np.array([[[float(pt[0]), float(pt[1])]]], dtype=np.float32)
+    c = cv2.perspectiveTransform(p, _H)[0][0]
+    return float(c[0]), float(c[1])
+
+
+def court_to_pixel(pt):
+    """Court (cx, cy) -> pixel (x, y). For drawing overlays."""
+    _ensure_homography()
+    p = np.array([[[float(pt[0]), float(pt[1])]]], dtype=np.float32)
+    c = cv2.perspectiveTransform(p, _H_inv)[0][0]
+    return float(c[0]), float(c[1])
 
 
 def get_ankle_position(keypoints):

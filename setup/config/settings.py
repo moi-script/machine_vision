@@ -84,3 +84,19 @@ COLOR_SHUTTLE      = (0,  100, 255)   # red
 COLOR_ZONE_ACTIVE  = (0,  255, 255)   # cyan when shuttle lands
 COLOR_SCORE_TEXT   = (255, 255, 255)  # white
 COLOR_WEAK_ZONE    = (0,    0, 255)   # red for weak zones
+
+# ============================================================
+# Court-space geometry (top-down homography model)
+# ============================================================
+
+# 4 pixel corners of the TRAINEE's far half-court, in this order:
+#   net_left, net_right, baseline_right, baseline_left
+# Filled in by calibrate.py. None until calibrated (build_homography errors).
+COURT_CORNERS = None   # e.g. [(x1,y1), (x2,y2), (x3,y3), (x4,y4)]
+
+# Court-space dimensions (arbitrary units; only ratios matter for zones).
+COURT_W = 518.0        # width  (net_left -> net_right)
+COURT_L = 670.0        # length (net -> far baseline)
+
+# Dead-band (court units) around the net line y=0 to debounce side/crossing.
+NET_DEADBAND = 15.0

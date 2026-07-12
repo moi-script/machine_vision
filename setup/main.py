@@ -26,13 +26,14 @@ from ultralytics import YOLO
 
 from config.settings import (
     CAMERA_INDEX, FRAME_WIDTH, FRAME_HEIGHT,
-    NET_X, PLAYER_ZONES, DIFFICULTY,
+    PLAYER_ZONES, DIFFICULTY,
     PERSON_CONFIDENCE, SHUTTLE_CONFIDENCE,
     RETURN_CONFIRM_FRAMES, GRAYSCALE
 )
-from utils.zones   import (
+from utils.zones import (
     get_ankle_position, get_zone_from_position,
-    get_player_in_zone, is_inside_court, get_shuttle_side
+    get_player_in_zone, get_shuttle_side,
+    to_court, in_court_bounds, crossed_net, build_homography,
 )
 from utils.scoring  import PlayerScores
 from utils.display  import (
@@ -78,7 +79,7 @@ else:
 
 # ── State ────────────────────────────────────────────────────
 scores              = PlayerScores()
-prev_shuttle_x      = None
+prev_shuttle_cy     = None
 shuttle_crossed     = False
 return_side_count   = 0        # consecutive frames shuttle seen on return side
 active_target_id    = None     # player ID currently being scored
@@ -167,17 +168,19 @@ def detect_players(frame):
     for i, tid in enumerate(track_ids):
         box = boxes[i].tolist()
 
-        # Filter: only count players inside the court zone
-        if not is_inside_court(box):
+        kps   = keypoints_data[i].tolist()
+        ankle = get_ankle_position(keypoints_data[i])
+
+        # Transform the pixel ankle into court space; keep only players on the
+        # trainee's half-court (feeder/near side maps to cy < 0 -> excluded).
+        if not ankle:
+            continue
+        cx, cy = to_court(ankle)
+        if not in_court_bounds(cx, cy):
             continue
 
-        kps    = keypoints_data[i].tolist()
-        ankle  = get_ankle_position(keypoints_data[i])
-
         scores.init_player(tid)
-
-        if ankle:
-            player_positions[tid] = ankle
+        player_positions[tid] = (cx, cy)
 
         detections.append({
             "id"       : tid,
@@ -189,44 +192,38 @@ def detect_players(frame):
 
 
 # ── Net crossing detection ────────────────────────────────────
-def check_net_crossing(shuttle_x):
+def check_net_crossing(shuttle_cy):
     """
-    Detects when shuttle moves from feeder side → player side.
-    Returns True on the frame the crossing is first confirmed.
+    Detects when the shuttle crosses from feeder side -> player side in court
+    space. Returns True on the frame the crossing is first confirmed.
     """
-    global prev_shuttle_x, shuttle_crossed
+    global prev_shuttle_cy, shuttle_crossed
 
-    if prev_shuttle_x is None:
-        prev_shuttle_x = shuttle_x
+    if prev_shuttle_cy is None:
+        prev_shuttle_cy = shuttle_cy
         return False
 
-    # Feeder side = right of net (shuttle_x > NET_X)
-    # Player side = left of net  (shuttle_x < NET_X)
-    just_crossed = (prev_shuttle_x > NET_X) and (shuttle_x < NET_X)
-    prev_shuttle_x = shuttle_x
+    just_crossed = crossed_net(prev_shuttle_cy, shuttle_cy)
+    prev_shuttle_cy = shuttle_cy
 
     if just_crossed and not shuttle_crossed:
         shuttle_crossed = True
         return True
-
     return False
 
 
 # ── Return detection ─────────────────────────────────────────
-def check_return(shuttle_x):
+def check_return(shuttle_cy):
     """
-    Detects when shuttle crosses back from player side → feeder side.
-    Requires RETURN_CONFIRM_FRAMES consecutive frames to avoid flicker.
-    Returns True when return is confirmed.
+    Detects when the shuttle crosses back player side -> feeder side. Requires
+    RETURN_CONFIRM_FRAMES consecutive feeder-side frames to avoid flicker.
     """
     global return_side_count
 
-    side = get_shuttle_side(shuttle_x)
-
-    if side == "feeder_side":
+    if get_shuttle_side(shuttle_cy) == "feeder_side":
         return_side_count += 1
     else:
-        return_side_count  = 0
+        return_side_count = 0
 
     return return_side_count >= RETURN_CONFIRM_FRAMES
 
@@ -254,7 +251,7 @@ def start_new_shot(player_positions):
     """
     global active_target_id, active_target_zone
     global shot_start_time, shuttle_crossed, return_side_count
-    global prev_shuttle_x, total_shots_fired
+    global prev_shuttle_cy, total_shots_fired
 
     # Pick a random zone
     zone_name = random.choice(list(PLAYER_ZONES.keys()))
@@ -273,7 +270,7 @@ def start_new_shot(player_positions):
     # Reset crossing state
     shuttle_crossed     = False
     return_side_count   = 0
-    prev_shuttle_x      = None
+    prev_shuttle_cy     = None
     shot_start_time     = time.time()
     active_target_id    = target_id
     active_target_zone  = zone_name
@@ -303,6 +300,12 @@ def run(difficulty="medium", shots=0):
     current_difficulty = difficulty
     max_shots          = shots
     interval           = DIFFICULTY[difficulty]["interval"]
+
+    try:
+        build_homography()
+    except ValueError as exc:
+        print(f"[CALIBRATION] {exc}")
+        return
 
     cap = open_camera()
     print(f"\n[START] Badminton Feeder Trainer")
@@ -409,11 +412,12 @@ def run(difficulty="medium", shots=0):
             # Process shuttle position
             if shuttle_pos:
                 sx, sy = shuttle_pos
+                scx, scy = to_court((sx, sy))
 
                 # Phase 1: wait for shuttle to cross net into player zone
                 if not shuttle_crossed:
-                    if check_net_crossing(sx):
-                        zone = get_zone_from_position(sx, sy)
+                    if check_net_crossing(scy):
+                        zone = get_zone_from_position(scx, scy)
                         print(f"[CROSSING] Shuttle entered zone: {zone}")
                         draw_status(frame,
                             f"Shuttle in {zone} → P{active_target_id} returning... "
@@ -426,7 +430,7 @@ def run(difficulty="medium", shots=0):
 
                 # Phase 2: shuttle crossed — wait for return
                 else:
-                    if check_return(sx):
+                    if check_return(scy):
                         # Successful return!
                         scores.record_score(active_target_id, active_target_zone)
                         print(f"[SCORE] Player {active_target_id} returned "

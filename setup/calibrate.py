@@ -1,16 +1,21 @@
 # ============================================================
 # calibrate.py — Run this FIRST before main.py
 #
-# This tool helps you find the correct pixel values for:
-#   - COURT_ZONE (x1, y1, x2, y2)
-#   - NET_X (vertical line position)
-#   - PLAYER_ZONES (6 zone boundaries)
+# This tool helps you set up your camera by clicking the 4 corners
+# of the trainee's half-court:
+#   1. NET_LEFT      (net meets the left sideline)
+#   2. NET_RIGHT     (net meets the right sideline)
+#   3. BASELINE_RIGHT (far baseline meets the right sideline)
+#   4. BASELINE_LEFT (far baseline meets the left sideline)
 #
 # How to use:
 #   1. python calibrate.py
-#   2. Click on corners of your court in the window
-#   3. Note the (x, y) values printed in terminal
-#   4. Copy those values into config/settings.py
+#   2. Click the 4 corners in the order listed above
+#   3. Copy the printed COURT_CORNERS = [...] value
+#   4. Paste it into config/settings.py
+#
+# All court geometry (net line, sides, 6 zones) is derived from these
+# 4 corners via homography, so it works for any camera angle.
 #
 # Controls:
 #   Left click  = print (x, y) coordinates

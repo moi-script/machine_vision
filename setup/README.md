@@ -136,13 +136,20 @@ badminton_feeder/
 pip install -r requirements.txt
 ```
 
-### 2. Calibrate your camera
+### 2. Calibrate your camera (feeder-mounted, end-on view)
 ```bash
 python calibrate.py
 ```
-- Click the 4 court corners → copy COURT_ZONE value to settings.py
-- Click the net line → copy NET_X value to settings.py
-- Adjust PLAYER_ZONES in settings.py to match your 6 zones
+- Click the 4 corners of the **trainee's half-court**, in order:
+  1. net meets the **left** sideline
+  2. net meets the **right** sideline
+  3. far baseline meets the **right** sideline
+  4. far baseline meets the **left** sideline
+- Copy the printed `COURT_CORNERS = [...]` into `config/settings.py`.
+
+All court geometry (net line, sides, 6 zones) is derived from these 4
+corners via a homography, so it works for any camera angle. The person on
+the feeder/near side of the net is automatically ignored.
 
 ### 3. Run the drill
 ```bash

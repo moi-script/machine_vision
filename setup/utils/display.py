@@ -3,14 +3,16 @@
 # ============================================================
 
 import cv2
+import numpy as np
 from collections import deque
 from config.settings import (
-    PLAYER_ZONES, NET_X, COURT_ZONE,
+    PLAYER_ZONES, COURT_W, COURT_L,
     COLOR_COURT_ZONE, COLOR_NET, COLOR_SHUTTLE,
     COLOR_ZONE_ACTIVE, COLOR_SCORE_TEXT, COLOR_WEAK_ZONE,
     COLOR_PLAYER_1, COLOR_PLAYER_2,
     SHOW_SKELETON, SHOW_ZONES, SHOW_SHUTTLE_TRAIL, TRAIL_LENGTH
 )
+from utils.zones import court_to_pixel
 
 # Shuttle trail buffer
 shuttle_trail = deque(maxlen=TRAIL_LENGTH)
@@ -21,46 +23,49 @@ PLAYER_COLORS = {
 }
 
 
+def _poly(pts):
+    """Court-space corner list -> int pixel polygon for cv2."""
+    return np.array([[int(round(x)), int(round(y))]
+                     for x, y in (court_to_pixel(p) for p in pts)], dtype=np.int32)
+
+
 def draw_court_zone(frame):
-    """Draw the hardcoded court boundary"""
-    x1, y1, x2, y2 = COURT_ZONE
-    cv2.rectangle(frame, (x1, y1), (x2, y2), COLOR_COURT_ZONE, 2)
-    cv2.putText(frame, "COURT", (x1 + 5, y1 + 20),
+    """Draw the trainee half-court outline (projected trapezoid)."""
+    corners = [(0.0, 0.0), (COURT_W, 0.0), (COURT_W, COURT_L), (0.0, COURT_L)]
+    cv2.polylines(frame, [_poly(corners)], True, COLOR_COURT_ZONE, 2)
+    lx, ly = court_to_pixel((0.0, 0.0))
+    cv2.putText(frame, "COURT", (int(lx) + 5, int(ly) + 20),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_COURT_ZONE, 1)
 
 
 def draw_net(frame):
-    """Draw the hardcoded net line"""
-    h = frame.shape[0]
-    cv2.line(frame, (NET_X, 0), (NET_X, h), COLOR_NET, 2)
-    cv2.putText(frame, "NET", (NET_X + 5, 20),
+    """Draw the net as the segment between the two net corners (y=0 edge)."""
+    x1, y1 = court_to_pixel((0.0, 0.0))
+    x2, y2 = court_to_pixel((COURT_W, 0.0))
+    cv2.line(frame, (int(x1), int(y1)), (int(x2), int(y2)), COLOR_NET, 2)
+    cv2.putText(frame, "NET", (int(x1) + 5, int(y1) - 8),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_NET, 1)
 
 
 def draw_zones(frame, active_zone=None, weak_zones=None):
-    """Draw the 6 player zones with optional highlights"""
+    """Draw the 6 court-space zones as projected trapezoids."""
     if not SHOW_ZONES:
         return
-
     weak_zones = weak_zones or []
 
     for zone_name, (x1, y1, x2, y2) in PLAYER_ZONES.items():
         if zone_name == active_zone:
-            color     = COLOR_ZONE_ACTIVE
-            thickness = 2
+            color, thickness = COLOR_ZONE_ACTIVE, 2
         elif zone_name in weak_zones:
-            color     = COLOR_WEAK_ZONE
-            thickness = 1
+            color, thickness = COLOR_WEAK_ZONE, 1
         else:
-            color     = COLOR_COURT_ZONE
-            thickness = 1
+            color, thickness = COLOR_COURT_ZONE, 1
 
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+        corners = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+        cv2.polylines(frame, [_poly(corners)], True, color, thickness)
 
-        # Zone label
-        label_x = x1 + 5
-        label_y = y1 + 15
-        cv2.putText(frame, zone_name, (label_x, label_y),
+        lx, ly = court_to_pixel((x1, y1))
+        cv2.putText(frame, zone_name, (int(lx) + 3, int(ly) + 14),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
 
 

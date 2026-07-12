@@ -31,11 +31,10 @@ def on_mouse_click(event, x, y, flags, param):
 
         # Give hints based on how many points clicked
         hints = [
-            "→ This could be COURT_ZONE top-left (x1, y1)",
-            "→ This could be COURT_ZONE top-right (x2, y1)",
-            "→ This could be COURT_ZONE bottom-right (x2, y2)",
-            "→ This could be COURT_ZONE bottom-left (x1, y2)",
-            "→ This could be NET_X (use the x value only)",
+            "→ 1: NET_LEFT  (net meets the LEFT sideline)",
+            "→ 2: NET_RIGHT (net meets the RIGHT sideline)",
+            "→ 3: BASELINE_RIGHT (far baseline meets RIGHT sideline)",
+            "→ 4: BASELINE_LEFT  (far baseline meets LEFT sideline)",
         ]
         if len(click_points) <= len(hints):
             print(f"  Hint: {hints[len(click_points)-1]}")
@@ -49,13 +48,11 @@ def run_calibration():
     cv2.namedWindow("Calibration")
     cv2.setMouseCallback("Calibration", on_mouse_click)
 
-    print("\n[CALIBRATION] Click on court boundaries in the camera frame")
-    print("  Suggested order:")
-    print("  1. Top-left corner of court")
-    print("  2. Top-right corner of court")
-    print("  3. Bottom-right corner of court")
-    print("  4. Bottom-left corner of court")
-    print("  5. Net position (any point on net line)")
+    print("\n[CALIBRATION] Click the 4 corners of the TRAINEE's half-court:")
+    print("  1. NET_LEFT      (net meets the left sideline)")
+    print("  2. NET_RIGHT     (net meets the right sideline)")
+    print("  3. BASELINE_RIGHT(far baseline meets the right sideline)")
+    print("  4. BASELINE_LEFT (far baseline meets the left sideline)")
     print("\n  Press S to save frame | Q to quit\n")
 
     while True:
@@ -90,23 +87,16 @@ def run_calibration():
     cap.release()
     cv2.destroyAllWindows()
 
-    # Print summary
     print("\n[SUMMARY] Your clicked points:")
     for i, (px, py) in enumerate(click_points):
         print(f"  Point {i+1}: ({px}, {py})")
 
     if len(click_points) >= 4:
-        xs = [p[0] for p in click_points[:4]]
-        ys = [p[1] for p in click_points[:4]]
-        x1, y1 = min(xs), min(ys)
-        x2, y2 = max(xs), max(ys)
-        print(f"\n[COURT_ZONE suggestion] ({x1}, {y1}, {x2}, {y2})")
-        print(f"  → Copy this to COURT_ZONE in config/settings.py")
-
-    if len(click_points) >= 5:
-        net_x = click_points[4][0]
-        print(f"\n[NET_X suggestion] {net_x}")
-        print(f"  → Copy this to NET_X in config/settings.py")
+        c = click_points[:4]
+        print("\n[COURT_CORNERS suggestion] paste into config/settings.py:")
+        print(f"COURT_CORNERS = [{c[0]}, {c[1]}, {c[2]}, {c[3]}]")
+    else:
+        print("\n[WARN] Need 4 corner clicks to produce COURT_CORNERS.")
 
 
 if __name__ == "__main__":

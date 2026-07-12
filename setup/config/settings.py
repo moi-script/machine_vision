@@ -14,21 +14,6 @@ FPS_TARGET      = 10       # target FPS for Raspberry Pi later
 # Set True for the OV9281; False for a normal color webcam (e.g. laptop cam).
 GRAYSCALE       = False
 
-# --- Court boundary (hardcode after calibrating your camera) ---
-# This is the full court area visible in your camera frame
-# Format: (x1, y1, x2, y2)
-COURT_ZONE      = (100, 50, 1180, 750)
-
-# --- Net position ---
-# Vertical X pixel position of the net in your side-view camera
-NET_X           = 640      # adjust after calibrating
-
-# --- Player side vs feeder side ---
-# In side view: player is LEFT of net, feeder is RIGHT
-# Change this if your camera is flipped
-PLAYER_SIDE     = "left"   # shuttle_x < NET_X
-FEEDER_SIDE     = "right"  # shuttle_x > NET_X
-
 # --- Difficulty settings (seconds between shots) ---
 DIFFICULTY = {
     "easy"  : {"interval": 5.0},
@@ -51,7 +36,6 @@ SHUTTLE_MODEL_PATH    = "models/shuttlecock.pt"
 PERSON_CONFIDENCE     = 0.5   # min confidence to count a person
 ANKLE_CONFIDENCE      = 0.5   # min confidence to use ankle keypoint
 SHUTTLE_CONFIDENCE    = 0.4   # min confidence to count shuttle
-PLAYER_OVERLAP_RATIO  = 0.6   # % of player box inside court zone
 
 # --- Scoring ---
 ZONE_WEAK_THRESHOLD   = 50.0  # below this % accuracy = weak zone

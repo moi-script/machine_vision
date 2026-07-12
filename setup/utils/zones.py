@@ -6,10 +6,8 @@ import cv2
 import numpy as np
 
 from config.settings import (
-    PLAYER_ZONES, NET_X, COURT_ZONE,
-    ANKLE_CONFIDENCE, PLAYER_OVERLAP_RATIO,
+    PLAYER_ZONES, ANKLE_CONFIDENCE,
     COURT_CORNERS, COURT_W, COURT_L, NET_DEADBAND,
-    PLAYER_SIDE, FEEDER_SIDE,
 )
 
 # ── Homography (image pixels <-> top-down court space) ───────
@@ -118,27 +116,6 @@ def get_player_in_zone(zone_name, player_positions):
         if x1 <= cx < x2 and y1 <= cy < y2:
             return player_id
     return None
-
-
-def is_inside_court(person_box):
-    """
-    Check if a detected person bounding box overlaps enough
-    with the hardcoded court zone.
-    Uses overlap ratio to filter out people standing outside court
-    (coaches, bystanders near the boundary).
-    person_box format: (x1, y1, x2, y2)
-    """
-    px1, py1, px2, py2 = person_box
-    cx1, cy1, cx2, cy2 = COURT_ZONE
-
-    overlap_x    = max(0, min(px2, cx2) - max(px1, cx1))
-    overlap_y    = max(0, min(py2, cy2) - max(py1, cy1))
-    overlap_area = overlap_x * overlap_y
-
-    person_area  = max(1, (px2 - px1) * (py2 - py1))
-    ratio        = overlap_area / person_area
-
-    return ratio >= PLAYER_OVERLAP_RATIO
 
 
 def get_shuttle_side(cy):

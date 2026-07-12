@@ -37,3 +37,49 @@ def test_court_to_pixel_is_inverse():
 def test_build_homography_requires_four_corners():
     with pytest.raises(ValueError):
         zones.build_homography([(0, 0), (1, 1)])
+
+
+def test_zone_mapping_front_left():
+    cx = settings.COURT_W * 0.16
+    cy = settings.COURT_L * 0.25
+    assert zones.get_zone_from_position(cx, cy) == "front_left"
+
+
+def test_zone_mapping_back_right():
+    cx = settings.COURT_W * 0.83
+    cy = settings.COURT_L * 0.75
+    assert zones.get_zone_from_position(cx, cy) == "back_right"
+
+
+def test_zone_outside_returns_none():
+    assert zones.get_zone_from_position(-10.0, 10.0) is None
+
+
+def test_in_court_bounds():
+    assert zones.in_court_bounds(10.0, 10.0) is True
+    assert zones.in_court_bounds(settings.COURT_W / 2, settings.COURT_L / 2) is True
+    # feeder side (negative y) and outside a sideline
+    assert zones.in_court_bounds(10.0, -5.0) is False
+    assert zones.in_court_bounds(settings.COURT_W + 5, 10.0) is False
+
+
+def test_shuttle_side():
+    assert zones.get_shuttle_side(200.0) == "player_side"
+    assert zones.get_shuttle_side(-200.0) == "feeder_side"
+    # within deadband counts as player side (not feeder)
+    assert zones.get_shuttle_side(0.0) == "player_side"
+
+
+def test_crossed_net():
+    # feeder -> player crossing
+    assert zones.crossed_net(-50.0, 50.0) is True
+    # jitter within deadband: no crossing
+    assert zones.crossed_net(-5.0, 5.0) is False
+    # already on player side: no new crossing
+    assert zones.crossed_net(30.0, 60.0) is False
+
+
+def test_player_in_zone_court_coords():
+    positions = {7: (settings.COURT_W * 0.16, settings.COURT_L * 0.25)}
+    assert zones.get_player_in_zone("front_left", positions) == 7
+    assert zones.get_player_in_zone("back_right", positions) is None

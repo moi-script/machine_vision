@@ -9,6 +9,7 @@ from config.settings import (
     PLAYER_ZONES, NET_X, COURT_ZONE,
     ANKLE_CONFIDENCE, PLAYER_OVERLAP_RATIO,
     COURT_CORNERS, COURT_W, COURT_L, NET_DEADBAND,
+    PLAYER_SIDE, FEEDER_SIDE,
 )
 
 # ── Homography (image pixels <-> top-down court space) ───────
@@ -89,33 +90,33 @@ def get_ankle_position(keypoints):
         return float(right_ankle[0]), float(right_ankle[1])
 
 
-def get_zone_from_position(x, y):
+def in_court_bounds(cx, cy):
+    """True if a court-space point is inside the trainee's half-court.
+
+    This is what excludes the feeder/near side: those points map to cy < 0.
     """
-    Given an (x, y) position, return which of the 6 zones it belongs to.
-    Returns zone name string or None if outside all zones.
-    """
+    return 0.0 <= cx <= COURT_W and 0.0 <= cy <= COURT_L
+
+
+def get_zone_from_position(cx, cy):
+    """Court-space (cx, cy) -> zone name, or None if outside all 6 zones."""
     for zone_name, (x1, y1, x2, y2) in PLAYER_ZONES.items():
-        if x1 < x < x2 and y1 < y < y2:
+        if x1 <= cx < x2 and y1 <= cy < y2:
             return zone_name
     return None
 
 
 def get_player_in_zone(zone_name, player_positions):
     """
-    Given a zone name and current player positions dict,
-    return the player_id whose ankle is inside that zone.
-    player_positions format: { player_id: (ankle_x, ankle_y) }
-    Returns player_id or None if nobody is in that zone.
+    zone_name + court-space player positions {id: (cx, cy)} -> player id whose
+    position is in that zone, else None.
     """
     if zone_name not in PLAYER_ZONES:
         return None
-
     x1, y1, x2, y2 = PLAYER_ZONES[zone_name]
-
-    for player_id, (ax, ay) in player_positions.items():
-        if x1 < ax < x2 and y1 < ay < y2:
+    for player_id, (cx, cy) in player_positions.items():
+        if x1 <= cx < x2 and y1 <= cy < y2:
             return player_id
-
     return None
 
 
@@ -140,12 +141,11 @@ def is_inside_court(person_box):
     return ratio >= PLAYER_OVERLAP_RATIO
 
 
-def get_shuttle_side(shuttle_x):
-    """
-    Determine which side of the net the shuttle is on.
-    Returns 'player_side' or 'feeder_side'
-    """
-    if shuttle_x < NET_X:
-        return "player_side"
-    else:
-        return "feeder_side"
+def get_shuttle_side(cy):
+    """Court-space y -> which side of the net the shuttle is on."""
+    return "feeder_side" if cy < -NET_DEADBAND else "player_side"
+
+
+def crossed_net(prev_cy, cy):
+    """True on a feeder->player crossing (sign flip past the dead-band)."""
+    return prev_cy < -NET_DEADBAND and cy > NET_DEADBAND

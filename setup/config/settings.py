@@ -29,18 +29,6 @@ NET_X           = 640      # adjust after calibrating
 PLAYER_SIDE     = "left"   # shuttle_x < NET_X
 FEEDER_SIDE     = "right"  # shuttle_x > NET_X
 
-# --- 6 Court zones on PLAYER side (x1, y1, x2, y2) ---
-# Divide player side into 3 columns x 2 rows
-# Calibrate these after setting up your camera
-PLAYER_ZONES = {
-    "back_left"  : (100,  50,  380, 300),
-    "back_mid"   : (380,  50,  640, 300),
-    "back_right" : (380,  50,  640, 300),  # adjust per your frame
-    "mid_left"   : (100,  300, 380, 550),
-    "mid_center" : (380,  300, 640, 550),
-    "mid_right"  : (640,  300, 920, 550),
-}
-
 # --- Difficulty settings (seconds between shots) ---
 DIFFICULTY = {
     "easy"  : {"interval": 5.0},
@@ -100,3 +88,16 @@ COURT_L = 670.0        # length (net -> far baseline)
 
 # Dead-band (court units) around the net line y=0 to debounce side/crossing.
 NET_DEADBAND = 15.0
+
+# --- 6 target zones in COURT SPACE (x1, y1, x2, y2); 3 cols x 2 rows ---
+# "front" = nearer the net (small y); "back" = nearer the far baseline.
+_CW3 = COURT_W / 3.0
+_CL2 = COURT_L / 2.0
+PLAYER_ZONES = {
+    "front_left":   (0.0,       0.0,   _CW3,      _CL2),
+    "front_center": (_CW3,      0.0,   2 * _CW3,  _CL2),
+    "front_right":  (2 * _CW3,  0.0,   COURT_W,   _CL2),
+    "back_left":    (0.0,       _CL2,  _CW3,      COURT_L),
+    "back_center":  (_CW3,      _CL2,  2 * _CW3,  COURT_L),
+    "back_right":   (2 * _CW3,  _CL2,  COURT_W,   COURT_L),
+}

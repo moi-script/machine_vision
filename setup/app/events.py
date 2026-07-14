@@ -35,7 +35,10 @@ class EventHub:
     async def pump(self) -> None:
         loop = asyncio.get_event_loop()
         while True:
-            msg = await loop.run_in_executor(None, self._q.get)
+            try:
+                msg = await loop.run_in_executor(None, self._q.get, True, 0.5)
+            except queue.Empty:
+                continue
             dead = []
             for ws in list(self._clients):
                 try:

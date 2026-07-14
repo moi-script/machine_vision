@@ -10,7 +10,9 @@ app = FastAPI(title="AeroSense Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    # Local-only app: allow any localhost port so a Vite dev server that
+    # auto-increments off 5173 (when the port is taken) still reaches the API.
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

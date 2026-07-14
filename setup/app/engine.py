@@ -53,12 +53,19 @@ class DrillEngine:
         self._player_model: YOLO | None = None
         self._persist = None           # set by Task D4
         self._scores = PlayerScores()  # kept for D4 to read
+        # Live-tunable thresholds (bound on the instance so reload_settings()
+        # actually reaches the loop closures — module-level imports won't).
+        self._person_conf = PERSON_CONFIDENCE
+        self._shuttle_conf = SHUTTLE_CONFIDENCE
         # Shuttle detection state (ported from main.py module-level state)
         self._shuttle_loaded = False   # guard so _load_shuttle_model runs once
         self._shuttle_model: YOLO | None = None
         self._shuttle_ready = False    # local weights loaded and usable
         self._shuttle_serverless = False
         self._serverless_warned = False
+        # start() -> _run() handshake so start() can raise synchronously.
+        self._started_evt = threading.Event()
+        self._start_error: str | None = None
 
     # ---- public state ----
     @property
@@ -96,12 +103,14 @@ class DrillEngine:
         from app.routers.settings import load_settings
         s = load_settings()
         self._interval = s.drill.intervals.get(self._difficulty, self._interval)
-        # thresholds live-apply through config module patching:
-        import config.settings as cfg
-        cfg.PERSON_CONFIDENCE = s.detection.personConf
-        cfg.SHUTTLE_CONFIDENCE = s.detection.shuttleConf
-        cfg.ZONE_WEAK_THRESHOLD = s.drill.weakZoneThreshold
-        self._needs_restart = True  # structural changes need a restart
+        # Live-apply thresholds via instance attrs (the loop closures read these).
+        self._person_conf = s.detection.personConf
+        self._shuttle_conf = s.detection.shuttleConf
+        # ZONE_WEAK_THRESHOLD was bound at import into utils.scoring — patch it
+        # on the module that actually holds it so weak-zone logic updates.
+        import utils.scoring as scoring_mod
+        scoring_mod.ZONE_WEAK_THRESHOLD = s.drill.weakZoneThreshold
+        self._needs_restart = True  # structural (camera) changes need a restart
 
     def start(self, session_id: str | None, difficulty: str, shots: int) -> None:
         if self._state != "idle":
@@ -111,9 +120,17 @@ class DrillEngine:
         self._session_id = session_id
         self._stop_flag = False
         self._state = "running"
+        self._start_error = None
+        self._started_evt.clear()
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="DrillEngine")
         self._thread.start()
+        # Wait for _run() to report camera/calibration outcome so we can raise
+        # synchronously. _run() sets the event before the heavy model load.
+        if not self._started_evt.wait(timeout=10.0) or self._start_error is not None:
+            self._state = "idle"
+            msg = self._start_error or "engine failed to start (timeout)"
+            raise RuntimeError(msg)
         self._emit_status()
 
     def stop(self) -> None:
@@ -143,6 +160,15 @@ class DrillEngine:
         if not ok:
             raise RuntimeError("camera capture failed")
         return cv2.imencode(".jpg", frame)[1].tobytes()
+
+    # ---- feeder (ported from main.py fire_feeder) ----
+    def _fire_feeder(self, zone_name: str) -> None:
+        """Trigger the physical feeder machine. Currently just broadcasts the
+        event; wire this to GPIO / serial when moving to the Raspberry Pi."""
+        hub.broadcast({"type": "feeder", "zone": zone_name, "at": _iso()})
+        # GPIO example for Raspberry Pi later:
+        #   GPIO.output(FEEDER_PIN, GPIO.HIGH); time.sleep(0.1)
+        #   GPIO.output(FEEDER_PIN, GPIO.LOW)
 
     # ---- shuttle detection (ported from main.py:54-157) ----
     def _load_shuttle_model(self) -> None:
@@ -181,7 +207,7 @@ class DrillEngine:
                     run_shuttlecock_model, extract_shuttle_xy,
                 )
                 result = run_shuttlecock_model(
-                    frame, confidence=int(SHUTTLE_CONFIDENCE * 100))
+                    frame, confidence=int(self._shuttle_conf * 100))
             except Exception as exc:  # noqa: BLE001 - never kill the drill loop
                 if not self._serverless_warned:
                     hub.broadcast({"type": "error",
@@ -197,7 +223,7 @@ class DrillEngine:
         if self._shuttle_ready:  # local weights
             try:
                 shuttle_results = self._shuttle_model(
-                    frame, conf=SHUTTLE_CONFIDENCE, verbose=False)
+                    frame, conf=self._shuttle_conf, verbose=False)
                 boxes = shuttle_results[0].boxes
                 if boxes is None or len(boxes) == 0:
                     return None
@@ -214,10 +240,11 @@ class DrillEngine:
         try:
             build_homography()
         except ValueError as exc:
-            hub.broadcast({"type": "error", "message": f"[CALIBRATION] {exc}"})
+            self._start_error = f"[CALIBRATION] {exc}"
             self._camera = "unavailable"
             self._state = "idle"
-            self._emit_status()
+            self._started_evt.set()
+            hub.broadcast({"type": "error", "message": f"[CALIBRATION] {exc}"})
             return
 
         # ── Camera setup (inline open_camera(), substitution 1) ──────
@@ -228,11 +255,14 @@ class DrillEngine:
             cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
 
         if not cap.isOpened():
+            self._start_error = "camera unavailable"
             self._camera = "unavailable"
             self._state = "idle"
-            self._emit_status()
+            self._started_evt.set()
             return
         self._camera = "ok"
+        # Success — let start() return promptly; heavy model load follows.
+        self._started_evt.set()
 
         if self._player_model is None:
             self._player_model = YOLO("yolov8n-pose.pt")
@@ -260,7 +290,7 @@ class DrillEngine:
         def detect_players(frame):
             results = player_model.track(frame, persist=True,
                                           classes=[0],
-                                          conf=PERSON_CONFIDENCE,
+                                          conf=self._person_conf,
                                           verbose=False)
             player_positions = {}
             detections = []
@@ -337,6 +367,7 @@ class DrillEngine:
 
             hub.broadcast({"type": "shot", "zone": zone_name,
                             "targetPlayerId": str(target_id), "at": _iso()})
+            self._fire_feeder(zone_name)
 
             return target_id, zone_name
 

@@ -1,8 +1,10 @@
 """FastAPI application entrypoint for AeroSense."""
-from fastapi import FastAPI
+import asyncio
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import db
+from app.events import hub
 
 app = FastAPI(title="AeroSense Backend")
 
@@ -28,3 +30,18 @@ def health():
     from app.engine import get_engine
     st = get_engine().status()
     return {"mongo": db.ping(), "engine": st["state"], "camera": st["camera"]}
+
+
+@app.on_event("startup")
+async def _start_pump():
+    asyncio.create_task(hub.pump())
+
+
+@app.websocket("/ws")
+async def ws_endpoint(ws: WebSocket):
+    await hub.connect(ws)
+    try:
+        while True:
+            await ws.receive_text()  # keep-alive; ignore client messages
+    except WebSocketDisconnect:
+        hub.disconnect(ws)

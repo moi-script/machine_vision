@@ -14,10 +14,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.routers import players, sessions
+from app.routers import players, sessions, settings as settings_router
 
 app.include_router(players.router)
 app.include_router(sessions.router)
+app.include_router(settings_router.router)
 
 
 @app.get("/api/health")

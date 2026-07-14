@@ -51,7 +51,6 @@ class DrillEngine:
         self._fps = 0.0
         self._needs_restart = False
         self._player_model: YOLO | None = None
-        self._persist = None           # set by Task D4
         self._scores = PlayerScores()  # kept for D4 to read
         # Live-tunable thresholds (bound on the instance so reload_settings()
         # actually reaches the loop closures — module-level imports won't).
@@ -81,6 +80,60 @@ class DrillEngine:
 
     def _emit_status(self) -> None:
         hub.broadcast(self.status())
+
+    # ---- Mongo persistence (Task D4) ----
+    @staticmethod
+    def _zone_to_frontend(zone: str) -> str:
+        return zone.replace("_", "-")
+
+    def _persist_shot(self, player_id: str, zone: str) -> None:
+        self._persist(player_id, zone, "shots", "totalShots")
+
+    def _persist_score(self, player_id: str, zone: str) -> None:
+        self._persist(player_id, zone, "scores", "totalScores")
+
+    def _persist(self, player_id, zone, field, total_field) -> None:
+        fz = self._zone_to_frontend(zone)
+        from app import db
+        # player cumulative
+        db.players().update_one(
+            {"_id": player_id},
+            {"$inc": {f"stats.{total_field}": 1,
+                      f"stats.zones.{fz}.{field}": 1}})
+        # session liveData (upsert the player's entry)
+        if not self._session_id:
+            return
+        sess = db.sessions()
+        matched = sess.update_one(
+            {"_id": self._session_id, "liveData.playerId": player_id},
+            {"$inc": {f"liveData.$.{field}": 1,
+                      f"liveData.$.zones.{fz}.{field}": 1}})
+        if matched.matched_count == 0:
+            empty = {z: {"shots": 0, "scores": 0} for z in
+                     ["front-left", "front-center", "front-right",
+                      "back-left", "back-center", "back-right"]}
+            empty[fz][field] = 1
+            sess.update_one({"_id": self._session_id}, {"$push": {"liveData": {
+                "playerId": player_id, "shots": int(field == "shots"),
+                "scores": int(field == "scores"), "zones": empty}}})
+
+    def _live_players_payload(self) -> list[dict]:
+        payload = []
+        for player_id, data in self._scores.scores.items():
+            zones = {}
+            for zone, zdata in data.items():
+                if zone in ("total_score", "total_shots"):
+                    continue
+                zones[self._zone_to_frontend(zone)] = {
+                    "shots": zdata["shots"], "scores": zdata["score"],
+                }
+            payload.append({
+                "playerId": str(player_id),
+                "shots": data.get("total_shots", 0),
+                "scores": data.get("total_score", 0),
+                "zones": zones,
+            })
+        return payload
 
     # ---- control ----
     def set_difficulty(self, difficulty: str) -> None:
@@ -356,6 +409,7 @@ class DrillEngine:
                 return None, None
 
             scores.record_shot(target_id, zone_name)
+            self._persist_shot(str(target_id), zone_name)
             total_shots_fired += 1
 
             shuttle_crossed = False
@@ -443,7 +497,7 @@ class DrillEngine:
             if now - last_stats > 0.5:
                 hub.broadcast({"type": "live_stats",
                                 "sessionId": self._session_id,
-                                "players": []})
+                                "players": self._live_players_payload()})
                 last_stats = now
 
             # ── Shot state machine ───────────────────────────────
@@ -493,6 +547,7 @@ class DrillEngine:
                     else:
                         if check_return(scy):
                             scores.record_score(active_target_id, active_target_zone)
+                            self._persist_score(str(active_target_id), active_target_zone)
                             hub.broadcast({"type": "score",
                                             "playerId": str(active_target_id),
                                             "zone": active_target_zone,

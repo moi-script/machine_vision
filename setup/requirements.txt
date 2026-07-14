@@ -8,3 +8,9 @@ lap          # required by ultralytics .track() (player tracking)
 # Called over plain REST — see utils/roboflow_client.py
 # (the official inference-sdk does not yet support Python 3.13)
 requests
+
+# Web API layer (FastAPI server over the drill engine)
+fastapi
+uvicorn[standard]
+pymongo
+python-multipart

@@ -4,6 +4,7 @@ Runs the capture -> detect -> score loop on a background thread, publishing
 annotated JPEG frames to app.streamer.buffer and structured events to
 app.events.hub. Control is via method calls (no cv2 window / keyboard)."""
 from __future__ import annotations
+import os
 import threading
 import time
 import random
@@ -16,6 +17,7 @@ from ultralytics import YOLO
 from config.settings import (
     PLAYER_ZONES, DIFFICULTY, PERSON_CONFIDENCE, RETURN_CONFIRM_FRAMES,
     GRAYSCALE, FRAME_WIDTH, FRAME_HEIGHT, CAMERA_INDEX,
+    SHUTTLE_SOURCE, SHUTTLE_MODEL_PATH, SHUTTLE_CONFIDENCE,
 )
 from utils.zones import (
     get_ankle_position, get_zone_from_position, get_player_in_zone,
@@ -51,6 +53,12 @@ class DrillEngine:
         self._player_model: YOLO | None = None
         self._persist = None           # set by Task D4
         self._scores = PlayerScores()  # kept for D4 to read
+        # Shuttle detection state (ported from main.py module-level state)
+        self._shuttle_loaded = False   # guard so _load_shuttle_model runs once
+        self._shuttle_model: YOLO | None = None
+        self._shuttle_ready = False    # local weights loaded and usable
+        self._shuttle_serverless = False
+        self._serverless_warned = False
 
     # ---- public state ----
     @property
@@ -136,6 +144,71 @@ class DrillEngine:
             raise RuntimeError("camera capture failed")
         return cv2.imencode(".jpg", frame)[1].tobytes()
 
+    # ---- shuttle detection (ported from main.py:54-157) ----
+    def _load_shuttle_model(self) -> None:
+        """Load the shuttle-detection source once. Mirrors main.py's model
+        loading block. Never raises — on any problem detection stays off."""
+        if self._shuttle_loaded:
+            return
+        self._shuttle_loaded = True
+
+        if SHUTTLE_SOURCE == "local":
+            if os.path.isfile(SHUTTLE_MODEL_PATH):
+                try:
+                    self._shuttle_model = YOLO(SHUTTLE_MODEL_PATH)
+                    self._shuttle_ready = True
+                except Exception as exc:  # noqa: BLE001 - keep the drill running
+                    hub.broadcast({"type": "error",
+                                    "message": f"[MODEL] Failed to load "
+                                               f"{SHUTTLE_MODEL_PATH}: {exc}"})
+            else:
+                hub.broadcast({"type": "error",
+                                "message": f"[MODEL] SHUTTLE_SOURCE='local' but no "
+                                           f"file at {SHUTTLE_MODEL_PATH} — shuttle "
+                                           f"detection disabled."})
+        elif SHUTTLE_SOURCE == "serverless":
+            self._shuttle_serverless = True
+        # else "off" — nothing to load.
+
+    def _detect_shuttle(self, frame, results_cache=None):
+        """Detect the shuttlecock in a frame -> (cx, cy) or None.
+
+        Ported from main.py's get_shuttle_position. All exceptions are
+        swallowed (a serverless network blip must never kill the loop)."""
+        if self._shuttle_serverless:
+            try:
+                from utils.roboflow_client import (
+                    run_shuttlecock_model, extract_shuttle_xy,
+                )
+                result = run_shuttlecock_model(
+                    frame, confidence=int(SHUTTLE_CONFIDENCE * 100))
+            except Exception as exc:  # noqa: BLE001 - never kill the drill loop
+                if not self._serverless_warned:
+                    hub.broadcast({"type": "error",
+                                    "message": f"[MODEL] Serverless shuttle "
+                                               f"detection error: {exc}"})
+                    self._serverless_warned = True
+                return None
+            try:
+                return extract_shuttle_xy(result)  # (x, y) centre, or None
+            except Exception:  # noqa: BLE001
+                return None
+
+        if self._shuttle_ready:  # local weights
+            try:
+                shuttle_results = self._shuttle_model(
+                    frame, conf=SHUTTLE_CONFIDENCE, verbose=False)
+                boxes = shuttle_results[0].boxes
+                if boxes is None or len(boxes) == 0:
+                    return None
+                best_i = int(boxes.conf.argmax())
+                x1, y1, x2, y2 = boxes.xyxy[best_i].tolist()
+                return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+            except Exception:  # noqa: BLE001
+                return None
+
+        return None  # "off" or no local weights
+
     # ---- the loop (adapted from main.py run()) ----
     def _run(self) -> None:
         try:
@@ -165,13 +238,10 @@ class DrillEngine:
             self._player_model = YOLO("yolov8n-pose.pt")
         player_model = self._player_model
 
-        def get_shuttle_position(frame, results_cache=None):
-            # Shuttle detection is intentionally out of scope for D3's port —
-            # local detection source is unavailable without wiring the
-            # shuttle model load path; mirror main.py's "off" behaviour.
-            return None
+        # Load shuttle detection source (local weights / serverless / off).
+        self._load_shuttle_model()
 
-        shuttle_worker = ShuttleWorker(get_shuttle_position)
+        shuttle_worker = ShuttleWorker(self._detect_shuttle)
         shuttle_worker.start()
 
         scores = self._scores

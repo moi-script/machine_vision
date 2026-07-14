@@ -22,6 +22,15 @@ class EventHub:
     def snapshot_last(self) -> dict | None:
         return self._last_status
 
+    def reset(self) -> None:
+        """Clear queued messages and last status (test isolation / restart)."""
+        try:
+            while True:
+                self._q.get_nowait()
+        except queue.Empty:
+            pass
+        self._last_status = None
+
     # --- async side, on the FastAPI event loop ---
     async def connect(self, ws) -> None:
         await ws.accept()

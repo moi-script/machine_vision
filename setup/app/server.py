@@ -14,13 +14,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.routers import players, sessions, settings as settings_router
+from app.routers import players, sessions, settings as settings_router, control
 
 app.include_router(players.router)
 app.include_router(sessions.router)
 app.include_router(settings_router.router)
+app.include_router(control.router)
+app.include_router(control.media_router)
 
 
 @app.get("/api/health")
 def health():
-    return {"mongo": db.ping(), "engine": "idle", "camera": "unknown"}
+    from app.engine import get_engine
+    st = get_engine().status()
+    return {"mongo": db.ping(), "engine": st["state"], "camera": st["camera"]}

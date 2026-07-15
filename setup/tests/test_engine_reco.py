@@ -28,3 +28,16 @@ def test_recognize_sets_identity_and_broadcasts(monkeypatch):
     e._recognize(3, [10, 10, 120, 180], frame)
     assert e._track_identity.get(3) == "p1"
     assert any(m.get("type") == "identity" and m.get("playerId") == "p1" for m in sent)
+
+
+def test_live_payload_maps_recognized_track_to_athlete():
+    # non-attributed (multi-player) branch: a recognized track must report the
+    # enrolled athlete id, matching what persistence attributes.
+    e = DrillEngine()
+    e._attributed_player = None
+    e._track_identity = {7: "p_reco"}
+    e._scores.init_player(7)
+    e._scores.record_shot(7, "front_left")
+    payload = e._live_players_payload()
+    entry = next(p for p in payload if p["shots"] == 1)
+    assert entry["playerId"] == "p_reco"      # mapped, not the track id "7"

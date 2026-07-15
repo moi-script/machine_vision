@@ -235,7 +235,10 @@ class DrillEngine:
                     "shots": zdata["shots"], "scores": zdata["score"],
                 }
             payload.append({
-                "playerId": str(player_id),
+                # map recognized tracks to the enrolled athlete so the live
+                # board matches what persistence attributes (falls back to the
+                # track id when the face isn't recognized).
+                "playerId": self._athlete_id(player_id),
                 "shots": data.get("total_shots", 0),
                 "scores": data.get("total_score", 0),
                 "zones": zones,

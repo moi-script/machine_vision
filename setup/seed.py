@@ -170,6 +170,13 @@ def _attendance():
     return rows
 
 
+def clear_db():
+    db.players().delete_many({})
+    db.sessions().delete_many({})
+    db.attendance().delete_many({})
+    print("cleared players, sessions, attendance")
+
+
 def seed():
     db.players().delete_many({})
     db.sessions().delete_many({})
@@ -181,4 +188,8 @@ def seed():
 
 
 if __name__ == "__main__":
-    seed()
+    import sys
+    if "--clear" in sys.argv:
+        clear_db()
+    else:
+        seed()

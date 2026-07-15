@@ -23,8 +23,11 @@
 #   Q           = quit
 # ============================================================
 
+import argparse
 import cv2
-from config.settings import CAMERA_INDEX, FRAME_WIDTH, FRAME_HEIGHT, GRAYSCALE
+from config.settings import (
+    CAMERA_INDEX, FRAME_WIDTH, FRAME_HEIGHT, GRAYSCALE, VIDEO_SOURCE,
+)
 
 click_points = []
 
@@ -45,15 +48,31 @@ def on_mouse_click(event, x, y, flags, param):
             print(f"  Hint: {hints[len(click_points)-1]}")
 
 
-def run_calibration():
-    cap = cv2.VideoCapture(CAMERA_INDEX)
+def run_calibration(source):
+    cap = cv2.VideoCapture(source)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+
+    is_file = not isinstance(source, int)
+
+    # For a video file, grab ONE frame and freeze it so corners are clicked on a
+    # static image. For a live webcam, keep streaming.
+    frozen = None
+    if is_file:
+        ret, frozen = cap.read()
+        if not ret:
+            print(f"[ERROR] Could not read a frame from {source!r}")
+            cap.release()
+            return
+        if GRAYSCALE and len(frozen.shape) == 2:
+            frozen = cv2.cvtColor(frozen, cv2.COLOR_GRAY2BGR)
 
     cv2.namedWindow("Calibration")
     cv2.setMouseCallback("Calibration", on_mouse_click)
 
-    print("\n[CALIBRATION] Click the 4 corners of the TRAINEE's half-court:")
+    src_kind = "webcam index" if isinstance(source, int) else "video file"
+    print(f"\n[SOURCE] Using {src_kind}: {source}")
+    print("[CALIBRATION] Click the 4 corners of the TRAINEE's half-court:")
     print("  1. NET_LEFT      (net meets the left sideline)")
     print("  2. NET_RIGHT     (net meets the right sideline)")
     print("  3. BASELINE_RIGHT(far baseline meets the right sideline)")
@@ -61,12 +80,14 @@ def run_calibration():
     print("\n  Press S to save frame | Q to quit\n")
 
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        if GRAYSCALE and len(frame.shape) == 2:
-            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        if is_file:
+            frame = frozen.copy()   # same static frame every loop
+        else:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if GRAYSCALE and len(frame.shape) == 2:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
         # Draw all clicked points
         for i, (px, py) in enumerate(click_points):
@@ -105,4 +126,17 @@ def run_calibration():
 
 
 if __name__ == "__main__":
-    run_calibration()
+    parser = argparse.ArgumentParser(description="Court corner calibration")
+    parser.add_argument("--source", default=None,
+                        help="Video file path to calibrate on instead of the "
+                             "webcam (overrides VIDEO_SOURCE / CAMERA_INDEX)")
+    args = parser.parse_args()
+
+    if args.source is not None:
+        source = args.source
+    elif VIDEO_SOURCE is not None:
+        source = VIDEO_SOURCE
+    else:
+        source = CAMERA_INDEX
+
+    run_calibration(source)

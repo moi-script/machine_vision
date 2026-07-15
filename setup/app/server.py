@@ -32,7 +32,7 @@ def health():
     from app.engine import get_engine
     from app import face
     st = get_engine().status()
-    return {"mongo": db.ping(), "engine": st["state"],
+    return {"mongo": db.ping(), "db": db.db_name(), "engine": st["state"],
             "camera": st["camera"], "face": face.models_available()}
 
 

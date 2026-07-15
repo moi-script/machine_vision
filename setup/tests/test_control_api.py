@@ -18,21 +18,30 @@ def test_pause_when_idle_is_noop_ok():
 
 class _FakeEngine:
     """Records control calls so we can assert start-takes-over policy without a camera."""
-    def __init__(self, state):
+    def __init__(self, state, session_id=None):
         self._state = state
+        self._session_id = session_id
         self.calls = []
 
     @property
     def state(self):
         return self._state
 
+    @property
+    def session_id(self):
+        return self._session_id
+
+    def arm(self):
+        self.calls.append("arm")
+
     def stop(self):
         self.calls.append("stop")
         self._state = "idle"
 
-    def start(self, session_id, difficulty, shots):
+    def start(self, session_id, difficulty, shots, armed=True):
         self.calls.append("start")
         self._state = "running"
+        self._session_id = session_id
 
     def status(self):
         return {"type": "engine_status", "state": self._state,

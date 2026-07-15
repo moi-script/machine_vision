@@ -45,6 +45,10 @@ class DrillEngine:
         self._difficulty = "medium"
         self._interval = DIFFICULTY["medium"]["interval"]
         self._shots = 0
+        # "Armed" gates shot-firing. A drill started for identity acquisition
+        # runs recognition only (unarmed) so the feeder-cam can identify
+        # athletes without throwing shuttles; arm() promotes it to a live match.
+        self._armed = True
         self._session_id: str | None = None
         self._thread: threading.Thread | None = None
         self._stop_flag = False
@@ -82,6 +86,10 @@ class DrillEngine:
     @property
     def state(self) -> str:
         return self._state
+
+    @property
+    def session_id(self) -> str | None:
+        return self._session_id
 
     def status(self) -> dict:
         return {
@@ -165,6 +173,7 @@ class DrillEngine:
     def _recognize(self, track_id: int, box, frame) -> None:
         """Throttled face recognition for one tracked person."""
         if not self._enrolled:
+            print("[RECO] no enrolled embeddings loaded", flush=True)  # DEBUG
             return
         now = time.time()
         # stop re-checking a track once confidently identified
@@ -178,17 +187,25 @@ class DrillEngine:
             x1, y1 = max(0, x1), max(0, y1)
             crop = frame[y1:y2, x1:x2]
             if crop.size == 0:
+                print(f"[RECO] track {track_id}: empty crop", flush=True)  # DEBUG
                 return
             emb = face.detect_and_embed(crop)
             if emb is None:
+                print(f"[RECO] track {track_id}: NO FACE detected in crop "
+                      f"{crop.shape}", flush=True)  # DEBUG
                 return
             hit = face.best_match(emb, self._enrolled)
+            scores = {pid: round(face.cosine(emb, e), 3)
+                      for pid, e in self._enrolled.items()}  # DEBUG
+            print(f"[RECO] track {track_id}: scores={scores} "
+                  f"threshold=0.363 hit={hit}", flush=True)  # DEBUG
             if hit is not None:
                 pid, score = hit
                 self._track_identity[track_id] = pid
                 hub.broadcast({"type": "identity", "playerId": pid,
                                "confidence": round(float(score), 3), "at": _iso()})
-        except Exception:  # noqa: BLE001 - never let recognition kill the loop
+        except Exception as exc:  # noqa: BLE001 - never let recognition kill the loop
+            print(f"[RECO] track {track_id}: exception {exc!r}", flush=True)  # DEBUG
             return
 
     def _athlete_id(self, track_id) -> str:
@@ -275,12 +292,28 @@ class DrillEngine:
         scoring_mod.ZONE_WEAK_THRESHOLD = s.drill.weakZoneThreshold
         self._needs_restart = True  # structural (camera) changes need a restart
 
-    def start(self, session_id: str | None, difficulty: str, shots: int) -> None:
+    def arm(self) -> None:
+        """Promote a recognition-only (unarmed) drill into a live match so the
+        feeder starts firing — without dropping the camera or the recognized-
+        track cache built up during identity acquisition."""
+        self._armed = True
+
+    def start(self, session_id: str | None, difficulty: str, shots: int,
+              armed: bool = True) -> None:
         if self._state != "idle":
             raise RuntimeError("engine already running")
         self.set_difficulty(difficulty)
         self._shots = shots
         self._session_id = session_id
+        self._armed = armed
+        # Fresh per-drill state. The engine is a singleton, so without this the
+        # previous drill's recognized tracks linger: YOLO reuses track ids, a
+        # reused id is still in _track_identity, so _recognize skips it and never
+        # re-broadcasts `identity` — recognition "only works the first time" until
+        # the server restarts. Clearing scores also keeps each session's board fresh.
+        self._track_identity = {}
+        self._last_reco = {}
+        self._scores = PlayerScores()
         self._stop_flag = False
         self._state = "running"
         self._start_error = None
@@ -298,9 +331,13 @@ class DrillEngine:
 
     def stop(self) -> None:
         self._stop_flag = True
-        if self._thread is not None:
-            self._thread.join(timeout=3.0)
-            self._thread = None
+        t = self._thread
+        # is_alive() is False for a thread that was never started (a start() that
+        # raced) or one that already finished — only join a live worker so stop()
+        # can never crash with "cannot join thread before it is started".
+        if t is not None and t.is_alive():
+            t.join(timeout=3.0)
+        self._thread = None
         self._state = "idle"
         self._emit_status()
 
@@ -550,7 +587,7 @@ class DrillEngine:
                     return_side_count = 0
                 return return_side_count >= RETURN_CONFIRM_FRAMES
 
-            def start_new_shot(player_positions):
+            def start_new_shot(player_positions, detections=None):
                 nonlocal active_target_id, active_target_zone
                 nonlocal shot_start_time, shuttle_crossed, return_side_count
                 nonlocal prev_shuttle_cy, total_shots_fired
@@ -558,7 +595,18 @@ class DrillEngine:
                 zone_name = random.choice(list(PLAYER_ZONES.keys()))
                 target_id = get_player_in_zone(zone_name, player_positions)
                 if target_id is None:
-                    return None, None
+                    # Fallback for uncalibrated / demo setups where the athlete
+                    # isn't standing inside the calibrated court (e.g. a webcam
+                    # that can't see their feet): still throw and attribute the
+                    # shot to a detected person — prefer a recognized track so it
+                    # rolls up to the enrolled athlete.
+                    if self._track_identity:
+                        target_id = next(iter(self._track_identity))
+                    elif detections:
+                        target_id = detections[0]["id"]
+                    else:
+                        return None, None
+                    scores.init_player(target_id)  # make the track scorable
 
                 scores.record_shot(target_id, zone_name)
                 self._persist_shot(self._athlete_id(target_id), zone_name)
@@ -620,9 +668,22 @@ class DrillEngine:
                 # ── Detect players ───────────────────────────────────
                 player_positions, detections = detect_players(frame)
 
+                if now - getattr(self, "_dbg_last", 0.0) > 1.0:  # DEBUG
+                    incourt = [d["id"] for d in detections if d.get("in_court")]
+                    print(f"[RECO] armed={self._armed} detections={len(detections)} "
+                          f"in_court={incourt} enrolled={list(self._enrolled)}",
+                          flush=True)
+                    self._dbg_last = now
+
                 for d in detections:
-                    if d.get("in_court"):
-                        self._recognize(d["id"], d["box"], frame)
+                    # During identity acquisition (unarmed) recognize anyone the
+                    # camera sees — the athlete needn't stand in the calibrated
+                    # court yet (their feet may not even be in frame). Once live
+                    # (armed), scope recognition to in-court players so
+                    # spectators don't get attributed.
+                    if self._armed and not d.get("in_court"):
+                        continue
+                    self._recognize(d["id"], d["box"], frame)
 
                 # ── Detect shuttle (async) ───────────────────────────
                 shuttle_worker.submit(frame.copy())
@@ -665,19 +726,29 @@ class DrillEngine:
                         self._publish(frame)
                         break
 
-                    remaining_wait = interval - elapsed
-                    if remaining_wait > 0:
+                    if not self._armed:
+                        # Recognition-only phase (identity acquisition): keep
+                        # recognizing on-court athletes but hold the feeder.
                         draw_status(frame,
-                            f"Next shot in {remaining_wait:.1f}s | "
-                            f"Players in court: {len(player_positions)}")
+                            "Acquiring identity — recognizing athletes...",
+                            (0, 200, 255))
                     else:
-                        if player_positions:
-                            start_new_shot(player_positions)
-                            last_shot_time = time.time()
-                        else:
+                        remaining_wait = interval - elapsed
+                        if remaining_wait > 0:
                             draw_status(frame,
-                                "Waiting for player to enter court...",
-                                (0, 200, 255))
+                                f"Next shot in {remaining_wait:.1f}s | "
+                                f"Players detected: {len(detections)}")
+                        else:
+                            # Fire when anyone is detected — in the calibrated
+                            # court if possible, otherwise attribute via the
+                            # fallback in start_new_shot so the drill still runs.
+                            if player_positions or detections:
+                                start_new_shot(player_positions, detections)
+                                last_shot_time = time.time()
+                            else:
+                                draw_status(frame,
+                                    "Waiting for a player to appear...",
+                                    (0, 200, 255))
 
                 else:
                     elapsed = time.time() - shot_start_time

@@ -28,17 +28,26 @@ from config.settings import (
     CAMERA_INDEX, FRAME_WIDTH, FRAME_HEIGHT,
     PLAYER_ZONES, DIFFICULTY,
     PERSON_CONFIDENCE, SHUTTLE_CONFIDENCE,
-    RETURN_CONFIRM_FRAMES, GRAYSCALE
+    RETURN_CONFIRM_FRAMES, GRAYSCALE,
+    COURT_W, COURT_L, VIDEO_SOURCE,
 )
+
+# Draw+log every YOLO-detected person and why it's kept/dropped. Flip to True
+# when a person isn't getting a box and you need to see why.
+DEBUG_DETECT = False
+
+# Video/camera source: file path or webcam index. Overridden by --source.
+video_source = VIDEO_SOURCE if VIDEO_SOURCE is not None else CAMERA_INDEX
 from utils.zones import (
     get_ankle_position, get_zone_from_position,
     get_player_in_zone, get_shuttle_side,
     to_court, in_court_bounds, crossed_net, build_homography,
 )
 from utils.scoring  import PlayerScores
+from utils.shuttle_worker import ShuttleWorker
 from utils.display  import (
     draw_court_zone, draw_net, draw_zones,
-    draw_player, draw_shuttle, draw_scoreboard, draw_status
+    draw_player, draw_shuttle, draw_scoreboard, draw_status, draw_fps
 )
 
 
@@ -72,7 +81,8 @@ elif SHUTTLE_SOURCE == "serverless":
     from utils.roboflow_client import run_shuttlecock_model, extract_shuttle_xy
     from config.settings import SHUTTLE_CONFIDENCE
     print("[MODEL] Shuttle detection via Roboflow serverless model "
-          "(free; expect a few FPS due to per-frame network latency).")
+          "(free; runs on a background thread so the drill loop stays smooth, "
+          "but shuttle position lags ~1s behind live).")
 else:
     print("[MODEL] Shuttle detection off (player/zone logic only).")
 
@@ -93,19 +103,22 @@ max_shots           = 0        # 0 = unlimited
 
 # ── Camera setup ─────────────────────────────────────────────
 def open_camera():
-    cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap = cv2.VideoCapture(video_source)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
 
-    # OV9281 — force grayscale mode if needed
-    if GRAYSCALE:
+    # OV9281 — force grayscale mode if needed (webcam only; ignored for files)
+    if GRAYSCALE and isinstance(video_source, int):
         cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
 
     if not cap.isOpened():
         raise RuntimeError(
-            f"Cannot open camera at index {CAMERA_INDEX}. "
-            "Try changing CAMERA_INDEX in config/settings.py"
+            f"Cannot open video source {video_source!r}. "
+            "For a webcam try changing CAMERA_INDEX; for a file check the path "
+            "in VIDEO_SOURCE (config/settings.py) or --source."
         )
+    src_kind = "webcam index" if isinstance(video_source, int) else "video file"
+    print(f"[SOURCE] Using {src_kind}: {video_source}")
     return cap
 
 
@@ -148,8 +161,14 @@ def get_shuttle_position(frame, results_cache=None):
 def detect_players(frame):
     """
     Run YOLOv8 pose model on frame.
-    Returns dict: { track_id: (ankle_x, ankle_y) }
-    Only includes players whose bounding box overlaps the court zone.
+
+    Returns (player_positions, detections):
+      player_positions : { track_id: (court_x, court_y) } — only players with a
+                         confident ankle that maps inside the court. These are
+                         the ones eligible for zone matching and scoring.
+      detections       : list of every detected person for drawing, each tagged
+                         "in_court": True/False. People without a court ankle
+                         (e.g. feet out of frame) are still drawn, just dimmed.
     """
     results          = player_model.track(frame, persist=True,
                                           classes=[0],
@@ -171,21 +190,35 @@ def detect_players(frame):
         kps   = keypoints_data[i].tolist()
         ankle = get_ankle_position(keypoints_data[i])
 
-        # Transform the pixel ankle into court space; keep only players on the
-        # trainee's half-court (feeder/near side maps to cy < 0 -> excluded).
-        if not ankle:
-            continue
-        cx, cy = to_court(ankle)
-        if not in_court_bounds(cx, cy):
-            continue
+        # A player is scorable only when we have a confident ankle that projects
+        # onto the trainee's half-court. Everyone else is still drawn (dimmed),
+        # so an upper-body-only detection stays visible — it just isn't tracked.
+        in_court = False
+        court_xy = None
+        if ankle:
+            court_xy = to_court(ankle)
+            if in_court_bounds(*court_xy):
+                in_court = True
+                scores.init_player(tid)
+                player_positions[tid] = court_xy
 
-        scores.init_player(tid)
-        player_positions[tid] = (cx, cy)
+        if DEBUG_DETECT:
+            if in_court:
+                print(f"[DEBUG] P{tid}: SCORABLE — court "
+                      f"({court_xy[0]:.0f},{court_xy[1]:.0f})")
+            elif ankle is None:
+                print(f"[DEBUG] P{tid}: seen, not scorable — no confident ankle keypoint")
+            else:
+                print(f"[DEBUG] P{tid}: seen, not scorable — ankle "
+                      f"{tuple(round(a) for a in ankle)} -> court "
+                      f"({court_xy[0]:.0f},{court_xy[1]:.0f}) OUTSIDE "
+                      f"[0..{COURT_W:.0f}]x[0..{COURT_L:.0f}]")
 
         detections.append({
             "id"       : tid,
             "box"      : box,
             "keypoints": kps,
+            "in_court" : in_court,
         })
 
     return player_positions, detections
@@ -308,6 +341,13 @@ def run(difficulty="medium", shots=0):
         return
 
     cap = open_camera()
+
+    # Shuttle detection is slow (serverless ~1s/frame); run it off the main
+    # loop so rendering + player tracking stay smooth. shuttle_pos read from
+    # the worker may lag detection latency behind the live frame.
+    shuttle_worker = ShuttleWorker(get_shuttle_position)
+    shuttle_worker.start()
+
     print(f"\n[START] Badminton Feeder Trainer")
     print(f"        Difficulty : {difficulty.upper()}")
     print(f"        Interval   : {interval}s per shot")
@@ -325,6 +365,9 @@ def run(difficulty="medium", shots=0):
         # OV9281 is grayscale — convert to BGR so YOLO and OpenCV work correctly
         if GRAYSCALE and len(frame.shape) == 2:
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+        # Smoothed FPS overlay (top-right, above the scoreboard)
+        draw_fps(frame)
 
         # ── Handle keyboard input ────────────────────────────
         key = cv2.waitKey(1) & 0xFF
@@ -354,8 +397,11 @@ def run(difficulty="medium", shots=0):
         # ── Detect players ───────────────────────────────────
         player_positions, detections = detect_players(frame)
 
-        # ── Detect shuttle ───────────────────────────────────
-        shuttle_pos = get_shuttle_position(frame)
+        # ── Detect shuttle (async) ───────────────────────────
+        # Hand the newest frame to the worker and read its latest result;
+        # neither call blocks on the ~1s detection.
+        shuttle_worker.submit(frame.copy())
+        shuttle_pos = shuttle_worker.get()
 
         # ── Draw base overlays ───────────────────────────────
         draw_court_zone(frame)
@@ -370,7 +416,8 @@ def run(difficulty="medium", shots=0):
                    weak_zones=weak_zones_all)
 
         for d in detections:
-            draw_player(frame, d["id"], d["box"], d["keypoints"])
+            draw_player(frame, d["id"], d["box"], d["keypoints"],
+                        scorable=d["in_court"])
 
         if shuttle_pos:
             draw_shuttle(frame, shuttle_pos[0], shuttle_pos[1])
@@ -470,6 +517,7 @@ def run(difficulty="medium", shots=0):
         cv2.imshow("Badminton Feeder Trainer", frame)
 
     # ── End of drill ─────────────────────────────────────────
+    shuttle_worker.stop()
     cap.release()
     cv2.destroyAllWindows()
     scores.print_assessment()
@@ -483,6 +531,12 @@ if __name__ == "__main__":
                         help="Drill difficulty")
     parser.add_argument("--shots", type=int, default=0,
                         help="Number of shots (0 = unlimited)")
+    parser.add_argument("--source", default=None,
+                        help="Video file path to run on instead of the webcam "
+                             "(overrides VIDEO_SOURCE / CAMERA_INDEX)")
     args = parser.parse_args()
+
+    if args.source is not None:
+        video_source = args.source
 
     run(difficulty=args.difficulty, shots=args.shots)

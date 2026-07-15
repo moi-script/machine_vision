@@ -3,6 +3,7 @@
 # ============================================================
 
 import cv2
+import time
 import numpy as np
 from collections import deque
 from config.settings import (
@@ -16,6 +17,9 @@ from utils.zones import court_to_pixel
 
 # Shuttle trail buffer
 shuttle_trail = deque(maxlen=TRAIL_LENGTH)
+
+# Frame timestamps for smoothed FPS (rolling average over the last 30 frames)
+_fps_times = deque(maxlen=30)
 
 PLAYER_COLORS = {
     1: COLOR_PLAYER_1,
@@ -69,15 +73,28 @@ def draw_zones(frame, active_zone=None, weak_zones=None):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
 
 
-def draw_player(frame, player_id, box, keypoints=None):
-    """Draw player bounding box and optional skeleton"""
-    color = PLAYER_COLORS.get(player_id, (200, 200, 200))
+def draw_player(frame, player_id, box, keypoints=None, scorable=True):
+    """Draw player bounding box and optional skeleton.
+
+    scorable=False means the person was detected but has no confident ankle on
+    the court (e.g. feet out of frame), so they aren't tracked for scoring. They
+    are still drawn, dimmed and labelled, so it's clear they're seen.
+    """
+    if scorable:
+        color     = PLAYER_COLORS.get(player_id, (200, 200, 200))
+        thickness = 2
+        label     = f"P{player_id}"
+    else:
+        color     = (120, 120, 120)   # dim gray
+        thickness = 1
+        label     = f"P{player_id} (off-court)"
+
     x1, y1, x2, y2 = [int(v) for v in box]
 
     # Bounding box
-    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-    cv2.putText(frame, f"P{player_id}", (x1, y1 - 8),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+    cv2.putText(frame, label, (x1, y1 - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, thickness)
 
     # Draw skeleton if pose keypoints available
     if SHOW_SKELETON and keypoints is not None:
@@ -97,13 +114,20 @@ def draw_player(frame, player_id, box, keypoints=None):
                 cv2.line(frame,
                          (int(xi), int(yi)),
                          (int(xj), int(yj)),
-                         color, 1)
+                         color, 2)
 
-        # Highlight ankle positions
+        # Joint dots on every confident keypoint (skip the 5 face points 0-4)
+        for idx in range(5, 17):
+            jx, jy, jc = keypoints[idx]
+            if jc > 0.4:
+                cv2.circle(frame, (int(jx), int(jy)), 3, color, -1)
+
+        # Emphasize the ankles — they're what the court-line decision uses
         for idx in [15, 16]:
             ax, ay, ac = keypoints[idx]
             if ac > 0.4:
-                cv2.circle(frame, (int(ax), int(ay)), 5, color, -1)
+                cv2.circle(frame, (int(ax), int(ay)), 7, color, -1)
+                cv2.circle(frame, (int(ax), int(ay)), 7, (255, 255, 255), 1)
 
 
 def draw_shuttle(frame, shuttle_x, shuttle_y):
@@ -122,10 +146,29 @@ def draw_shuttle(frame, shuttle_x, shuttle_y):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_SHUTTLE, 1)
 
 
+def draw_fps(frame):
+    """Draw a smoothed FPS reading in the top-right corner, above the scoreboard.
+
+    Averages over the last ~30 frames so the number stays steady instead of
+    flickering frame to frame.
+    """
+    _fps_times.append(time.time())
+
+    if len(_fps_times) >= 2:
+        span = _fps_times[-1] - _fps_times[0]
+        fps = (len(_fps_times) - 1) / span if span > 0 else 0.0
+    else:
+        fps = 0.0
+
+    cv2.putText(frame, f"FPS: {fps:.1f}",
+                (frame.shape[1] - 215, 24),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_SCORE_TEXT, 1)
+
+
 def draw_scoreboard(frame, player_scores, difficulty, active_target=None):
     """Draw live scoreboard in top-right corner"""
     panel_x = frame.shape[1] - 220
-    panel_y = 10
+    panel_y = 32
     panel_w = 210
     panel_h = 30 + (len(player_scores.scores) * 60)
 

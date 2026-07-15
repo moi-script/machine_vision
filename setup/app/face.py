@@ -25,8 +25,11 @@ def models_available() -> bool:
 def _load():
     global _detector, _recognizer
     if _detector is None:
+        # 0.6 (not 0.9) so YuNet still resolves the smaller, lower-quality faces
+        # a distant feeder camera sees on court; SFace's 0.363 cosine gate is
+        # what actually guards against wrong matches.
         _detector = cv2.FaceDetectorYN.create(_YUNET, "", (320, 320),
-                                              score_threshold=0.9)
+                                              score_threshold=0.6)
         _recognizer = cv2.FaceRecognizerSF.create(_SFACE, "")
     return _detector, _recognizer
 
@@ -50,6 +53,14 @@ def detect_and_embed(bgr):
     try:
         det, rec = _load()
         h, w = bgr.shape[:2]
+        # Distant feeder-cam person crops are small/narrow and the face is a
+        # tiny fraction of the box; upscale so YuNet can resolve it. Enrollment
+        # close-ups are already wide → scale stays ~1.0.
+        if 0 < w < 480:
+            scale = min(3.0, 480.0 / w)
+            bgr = cv2.resize(bgr, (round(w * scale), round(h * scale)),
+                             interpolation=cv2.INTER_LINEAR)
+            h, w = bgr.shape[:2]
         det.setInputSize((w, h))
         _, faces = det.detect(bgr)
         if faces is None or len(faces) == 0:

@@ -4,8 +4,12 @@
 # and measuring pixel positions manually
 # ============================================================
 
-# --- Camera ---
+# --- Camera / video source ---
 CAMERA_INDEX    = 0        # USB camera index (try 0 or 1)
+# Set to a video file path (e.g. "clips/rally.mp4") to run on recorded footage
+# instead of the live webcam. None = use the live CAMERA_INDEX webcam.
+# Both calibrate.py and main.py honor this, and a --source CLI flag overrides it.
+VIDEO_SOURCE    = None
 FRAME_WIDTH     = 1280     # OV9281 native width
 FRAME_HEIGHT    = 800      # OV9281 native height
 FPS_TARGET      = 10       # target FPS for Raspberry Pi later
@@ -64,7 +68,7 @@ COLOR_WEAK_ZONE    = (0,    0, 255)   # red for weak zones
 # 4 pixel corners of the TRAINEE's far half-court, in this order:
 #   net_left, net_right, baseline_right, baseline_left
 # Filled in by calibrate.py. None until calibrated (build_homography errors).
-COURT_CORNERS = None   # e.g. [(x1,y1), (x2,y2), (x3,y3), (x4,y4)]
+COURT_CORNERS = [(441, 36), (842, 45), (1134, 668), (197, 678)]
 
 # Court-space dimensions (arbitrary units; only ratios matter for zones).
 COURT_W = 518.0        # width  (net_left -> net_right)

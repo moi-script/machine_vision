@@ -4,10 +4,39 @@ from pymongo import MongoClient
 from pymongo.database import Database
 from pymongo.collection import Collection
 
+
+def _load_env_file() -> None:
+    """Load KEY=VALUE lines from setup/.env into os.environ (without overriding
+    vars already set in the shell). python-dotenv isn't a dependency, so this is
+    hand-rolled. This pins MONGO_DB to the committed value so the database can't
+    silently drift between runs — the cause of "registered players vanish after
+    a restart" (data written to one db name, read back from another)."""
+    path = os.path.join(os.path.dirname(__file__), "..", ".env")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+    except FileNotFoundError:
+        pass
+
+
+_load_env_file()
+
 _MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017/")
 _MONGO_DB = os.environ.get("MONGO_DB", "aerosense")
+# Surface the resolved target on every start so which database is in use is
+# never a mystery — cross-check this against your Mongo viewer.
+print(f"[DB] MongoDB {_MONGO_URL} -> database '{_MONGO_DB}'", flush=True)
 
 _client: MongoClient | None = None
+
+
+def db_name() -> str:
+    return _MONGO_DB
 
 
 def get_client() -> MongoClient:

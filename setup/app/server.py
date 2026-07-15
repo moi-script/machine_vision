@@ -30,8 +30,10 @@ app.include_router(control.media_router)
 @app.get("/api/health")
 def health():
     from app.engine import get_engine
+    from app import face
     st = get_engine().status()
-    return {"mongo": db.ping(), "engine": st["state"], "camera": st["camera"]}
+    return {"mongo": db.ping(), "engine": st["state"],
+            "camera": st["camera"], "face": face.models_available()}
 
 
 @app.on_event("startup")

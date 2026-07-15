@@ -5,6 +5,7 @@
 # Model weights (never commit large weight files)
 *.pt
 models/*.pt
+models/*.onnx
 
 # Roboflow workflow image outputs written to disk
 rf_*.jpg

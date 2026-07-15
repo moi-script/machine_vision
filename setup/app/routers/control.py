@@ -22,9 +22,15 @@ class DifficultyBody(BaseModel):
 @router.post("/start")
 def start(body: StartBody):
     eng = get_engine()
+    # One drill at a time — the newest start wins. If a drill is already
+    # running (or paused), stop it first so starting a new/next session
+    # takes over cleanly instead of colliding with a 409.
+    if eng.state != "idle":
+        eng.stop()
     try:
         eng.start(body.sessionId, body.difficulty, body.shots)
     except RuntimeError as exc:
+        # A real failure to start (camera unavailable / court not calibrated).
         raise HTTPException(409, str(exc))
     return {"ok": True, "status": eng.status()}
 

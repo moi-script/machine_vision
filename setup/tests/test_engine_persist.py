@@ -32,3 +32,36 @@ def test_persist_score_increments_session_and_player():
 
     db.sessions().delete_many({"_id": "s_ptest"})
     db.players().delete_many({"_id": "p_ptest"})
+
+
+def test_single_assigned_player_is_attributed():
+    db.sessions().delete_many({"_id": "s_attr"})
+    db.sessions().insert_one({"_id": "s_attr", "liveData": [],
+                              "assignedPlayerIds": ["p_attr"]})
+
+    e = DrillEngine()
+    e._session_id = "s_attr"
+    e._load_attribution()
+
+    assert e._attributed_player == "p_attr"
+    # Any YOLO track id rolls up to the enrolled athlete.
+    assert e._athlete_id(1) == "p_attr"
+    assert e._athlete_id(7) == "p_attr"
+
+    db.sessions().delete_many({"_id": "s_attr"})
+
+
+def test_multiple_assigned_players_disable_attribution():
+    db.sessions().delete_many({"_id": "s_multi"})
+    db.sessions().insert_one({"_id": "s_multi", "liveData": [],
+                              "assignedPlayerIds": ["p_a", "p_b"]})
+
+    e = DrillEngine()
+    e._session_id = "s_multi"
+    e._load_attribution()
+
+    assert e._attributed_player is None
+    # With attribution off, scoring stays keyed by the raw track id.
+    assert e._athlete_id(3) == "3"
+
+    db.sessions().delete_many({"_id": "s_multi"})

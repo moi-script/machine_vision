@@ -46,12 +46,18 @@ def settings_col() -> Collection:
 
 
 def list_docs(col: Collection) -> list[dict]:
-    """Return all docs with Mongo `_id` surfaced as `id`."""
+    """Return all docs with Mongo `_id` surfaced as a string `id`.
+
+    Docs inserted without an explicit `_id` (e.g. attendance) get a Mongo
+    ObjectId, which is not JSON-serializable; stringify it so the API can
+    return it. String ids (players/sessions use `p1`/`s1`) pass through
+    unchanged.
+    """
     out = []
     for doc in col.find():
         doc = dict(doc)
         if "id" not in doc:
-            doc["id"] = doc.pop("_id")
+            doc["id"] = str(doc.pop("_id"))
         else:
             doc.pop("_id", None)
         out.append(doc)

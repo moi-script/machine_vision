@@ -2,9 +2,14 @@
 import os
 from datetime import date
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
-from app import db
+from app import db, face
 from app.models import PlayerIn, PlayerPatch
+
+
+class FaceBody(BaseModel):
+    imageDataUrl: str
 
 router = APIRouter(prefix="/api/players", tags=["players"])
 
@@ -24,9 +29,14 @@ def _new_id() -> str:
     return "p" + os.urandom(4).hex()
 
 
+def _strip_embedding(doc: dict) -> dict:
+    doc.pop("faceEmbedding", None)
+    return doc
+
+
 @router.get("")
 def list_players():
-    return db.list_docs(db.players())
+    return [_strip_embedding(p) for p in db.list_docs(db.players())]
 
 
 @router.post("")
@@ -57,7 +67,7 @@ def get_player(pid: str):
     if not doc:
         raise HTTPException(404, "player not found")
     doc["id"] = doc.pop("_id")
-    return doc
+    return _strip_embedding(doc)
 
 
 @router.patch("/{pid}")
@@ -74,4 +84,21 @@ def deactivate_player(pid: str):
     res = db.players().update_one({"_id": pid}, {"$set": {"isActive": False}})
     if res.matched_count == 0:
         raise HTTPException(404, "player not found")
+    return {"ok": True}
+
+
+@router.post("/{pid}/face")
+def enroll_face(pid: str, body: FaceBody):
+    if db.players().find_one({"_id": pid}) is None:
+        raise HTTPException(404, "player not found")
+    if not face.models_available():
+        raise HTTPException(503, "face models unavailable — run fetch_face_models.py")
+    img = face.decode_data_url(body.imageDataUrl)
+    if img is None:
+        raise HTTPException(422, "could not read image")
+    emb = face.detect_and_embed(img)
+    if emb is None:
+        raise HTTPException(422, "No face detected — retake.")
+    db.players().update_one({"_id": pid},
+                            {"$set": {"faceEmbedding": emb, "faceEnrolled": True}})
     return {"ok": True}

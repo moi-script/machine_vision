@@ -32,6 +32,7 @@ from utils.display import (
 
 from app.streamer import buffer as frame_buffer
 from app.events import hub
+from app import face
 
 
 def _iso() -> str:
@@ -56,6 +57,12 @@ class DrillEngine:
         # roll up to (set in _load_attribution when the session has exactly one
         # assigned player). None -> persist/report per raw track id.
         self._attributed_player: str | None = None
+        # Face recognition state (Task C1): enrolled embeddings, resolved
+        # track -> athlete identities, and per-track recognition throttling.
+        self._enrolled: dict = {}
+        self._track_identity: dict = {}
+        self._last_reco: dict = {}
+        self._reco_interval = 1.0  # seconds between recognition attempts per track
         # Live-tunable thresholds (bound on the instance so reload_settings()
         # actually reaches the loop closures — module-level imports won't).
         self._person_conf = PERSON_CONFIDENCE
@@ -139,9 +146,59 @@ class DrillEngine:
         assigned = (sess or {}).get("assignedPlayerIds", [])
         self._attributed_player = assigned[0] if len(assigned) == 1 else None
 
+    def _load_enrolled(self) -> None:
+        """Load enrolled players' face embeddings for on-court recognition.
+        Never raises — any DB/model issue just leaves recognition off."""
+        from app import db
+        self._enrolled = {}
+        if not face.models_available():
+            return
+        try:
+            for p in db.players().find(
+                    {"faceEnrolled": True, "faceEmbedding": {"$ne": None}}):
+                emb = p.get("faceEmbedding")
+                if emb:
+                    self._enrolled[p["_id"]] = emb
+        except Exception:  # noqa: BLE001 - never let a DB blip kill startup
+            self._enrolled = {}
+
+    def _recognize(self, track_id: int, box, frame) -> None:
+        """Throttled face recognition for one tracked person."""
+        if not self._enrolled:
+            return
+        now = time.time()
+        # stop re-checking a track once confidently identified
+        if track_id in self._track_identity:
+            return
+        if now - self._last_reco.get(track_id, 0.0) < self._reco_interval:
+            return
+        self._last_reco[track_id] = now
+        try:
+            x1, y1, x2, y2 = [int(v) for v in box]
+            x1, y1 = max(0, x1), max(0, y1)
+            crop = frame[y1:y2, x1:x2]
+            if crop.size == 0:
+                return
+            emb = face.detect_and_embed(crop)
+            if emb is None:
+                return
+            hit = face.best_match(emb, self._enrolled)
+            if hit is not None:
+                pid, score = hit
+                self._track_identity[track_id] = pid
+                hub.broadcast({"type": "identity", "playerId": pid,
+                               "confidence": round(float(score), 3), "at": _iso()})
+        except Exception:  # noqa: BLE001 - never let recognition kill the loop
+            return
+
     def _athlete_id(self, track_id) -> str:
         """Map a YOLO track id to the enrolled athlete id when attribution is
-        active, else fall back to the stringified track id."""
+        active, else fall back to the stringified track id.
+
+        Order: recognized face wins, then the single-assigned session
+        fallback, then the raw track id."""
+        if track_id in self._track_identity:
+            return self._track_identity[track_id]
         return self._attributed_player or str(track_id)
 
     def _live_players_payload(self) -> list[dict]:
@@ -371,6 +428,8 @@ class DrillEngine:
 
         # Resolve single-trainee attribution for this session.
         self._load_attribution()
+        # Load enrolled face embeddings for on-court recognition.
+        self._load_enrolled()
 
         try:
             build_homography()
@@ -557,6 +616,10 @@ class DrillEngine:
 
                 # ── Detect players ───────────────────────────────────
                 player_positions, detections = detect_players(frame)
+
+                for d in detections:
+                    if d.get("in_court"):
+                        self._recognize(d["id"], d["box"], frame)
 
                 # ── Detect shuttle (async) ───────────────────────────
                 shuttle_worker.submit(frame.copy())

@@ -96,7 +96,11 @@ def enroll_face(pid: str, body: FaceBody):
     img = face.decode_data_url(body.imageDataUrl)
     if img is None:
         raise HTTPException(422, "could not read image")
-    emb = face.detect_and_embed(img)
+    # Enroll in the same colour modality the feeder camera recognizes in, so a
+    # colour enrollment photo doesn't mismatch a grayscale on-court feed.
+    from app.routers.settings import load_settings
+    grayscale = load_settings().camera.grayscale
+    emb = face.detect_and_embed(img, grayscale=grayscale)
     if emb is None:
         raise HTTPException(422, "No face detected — retake.")
     db.players().update_one({"_id": pid},

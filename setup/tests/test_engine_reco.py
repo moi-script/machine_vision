@@ -19,7 +19,7 @@ def test_recognize_sets_identity_and_broadcasts(monkeypatch):
     e._track_identity = {}
     e._last_reco = {}
     # stub face detection to always "recognize" p1
-    monkeypatch.setattr(eng.face, "detect_and_embed", lambda crop: [0.1] * 128)
+    monkeypatch.setattr(eng.face, "detect_and_embed", lambda crop, grayscale=False: [0.1] * 128)
     monkeypatch.setattr(eng.face, "best_match", lambda emb, enrolled, **k: ("p1", 0.9))
     sent = []
     monkeypatch.setattr(eng.hub, "broadcast", lambda m: sent.append(m))

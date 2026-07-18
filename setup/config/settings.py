@@ -5,7 +5,7 @@
 # ============================================================
 
 # --- Camera / video source ---
-CAMERA_INDEX    = 0        # USB camera index (try 0 or 1)
+CAMERA_INDEX    = 1        # USB camera index (0 = built-in laptop cam, 1 = external USB cam)
 # Set to a video file path (e.g. "clips/rally.mp4") to run on recorded footage
 # instead of the live webcam. None = use the live CAMERA_INDEX webcam.
 # Both calibrate.py and main.py honor this, and a --source CLI flag overrides it.
@@ -16,7 +16,7 @@ FPS_TARGET      = 10       # target FPS for Raspberry Pi later
 
 # OV9281 is grayscale — convert for YOLO compatibility.
 # Set True for the OV9281; False for a normal color webcam (e.g. laptop cam).
-GRAYSCALE       = False
+GRAYSCALE       = True
 
 # --- Difficulty settings (seconds between shots) ---
 DIFFICULTY = {
@@ -40,6 +40,13 @@ SHUTTLE_MODEL_PATH    = "models/shuttlecock.pt"
 PERSON_CONFIDENCE     = 0.5   # min confidence to count a person
 ANKLE_CONFIDENCE      = 0.5   # min confidence to use ankle keypoint
 SHUTTLE_CONFIDENCE    = 0.4   # min confidence to count shuttle
+
+# --- Face recognition ---
+# SFace cosine similarity gate: a live face must score at least this against an
+# enrolled embedding to count as a match. 0.363 is OpenCV's published default;
+# grayscale feeds carry less signal, so you may need to lower it (~0.30) once
+# you test on the real camera.
+FACE_MATCH_THRESHOLD  = 0.363
 
 # --- Scoring ---
 ZONE_WEAK_THRESHOLD   = 50.0  # below this % accuracy = weak zone

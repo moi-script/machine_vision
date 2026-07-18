@@ -46,11 +46,26 @@ def decode_data_url(data_url: str):
         return None
 
 
-def detect_and_embed(bgr):
-    """Return the 128-d embedding of the largest detected face, or None."""
+def to_grayscale_bgr(bgr):
+    """Collapse a BGR image to luminance and restore 3 identical channels.
+
+    Keeps the array shape SFace expects (H, W, 3) while discarding colour, so an
+    enrollment photo taken on a colour webcam matches the grayscale content a
+    monochrome feeder camera (e.g. OV9281) produces on court."""
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+
+def detect_and_embed(bgr, grayscale: bool = False):
+    """Return the 128-d embedding of the largest detected face, or None.
+
+    When `grayscale` is set, the image is normalised to luminance first so both
+    sides of a comparison (enrollment + live) share the same colour modality."""
     if bgr is None or not models_available():
         return None
     try:
+        if grayscale:
+            bgr = to_grayscale_bgr(bgr)
         det, rec = _load()
         h, w = bgr.shape[:2]
         # Distant feeder-cam person crops are small/narrow and the face is a

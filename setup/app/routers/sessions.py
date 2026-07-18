@@ -74,6 +74,18 @@ def patch_session(sid: str, body: SessionPatch):
     return _out(db.sessions().find_one({"_id": sid}))
 
 
+@router.delete("/api/sessions/{sid}")
+def delete_session(sid: str):
+    doc = db.sessions().find_one({"_id": sid})
+    if not doc:
+        raise HTTPException(404, "session not found")
+    if doc.get("status") == "live":
+        raise HTTPException(409, "cannot delete a live match — complete it first")
+    db.sessions().delete_one({"_id": sid})
+    db.attendance().delete_many({"sessionId": sid})
+    return {"ok": True}
+
+
 @router.get("/api/attendance")
 def list_attendance():
     return db.list_docs(db.attendance())

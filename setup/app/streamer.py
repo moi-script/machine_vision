@@ -18,6 +18,16 @@ class FrameBuffer:
         with self._lock:
             return self._jpeg
 
+    def clear(self) -> None:
+        """Drop the retained frame when the engine stops.
+
+        Without this the last published JPEG is served indefinitely, so a dead
+        engine still looks like a live feed — a frozen frame that hides the fact
+        that nothing is running.
+        """
+        with self._lock:
+            self._jpeg = None
+
     def frames(self):
         """Yield multipart JPEG chunks for an MJPEG HTTP response."""
         header = (b"--" + BOUNDARY.encode() +

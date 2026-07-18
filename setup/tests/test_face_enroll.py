@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 from app.server import app
 from app import db, face as face_mod
+from app.models import Settings
 
 client = TestClient(app)
 
@@ -18,7 +19,7 @@ def test_enroll_stores_embedding_and_is_hidden(monkeypatch):
     # bypass the real model: pretend a face was found
     monkeypatch.setattr(face_mod, "models_available", lambda: True)
     monkeypatch.setattr(face_mod, "decode_data_url", lambda s: "img")
-    monkeypatch.setattr(face_mod, "detect_and_embed", lambda img: [0.1] * 128)
+    monkeypatch.setattr(face_mod, "detect_and_embed", lambda img, grayscale=False: [0.1] * 128)
 
     r = client.post(f"/api/players/{pid}/face", json={"imageDataUrl": "data:image/jpeg;base64,AAAA"})
     assert r.status_code == 200 and r.json()["ok"] is True
@@ -35,6 +36,24 @@ def test_enroll_no_face_returns_422(monkeypatch):
     pid = _make_player()
     monkeypatch.setattr(face_mod, "models_available", lambda: True)
     monkeypatch.setattr(face_mod, "decode_data_url", lambda s: "img")
-    monkeypatch.setattr(face_mod, "detect_and_embed", lambda img: None)
+    monkeypatch.setattr(face_mod, "detect_and_embed", lambda img, grayscale=False: None)
     r = client.post(f"/api/players/{pid}/face", json={"imageDataUrl": "data:image/jpeg;base64,AAAA"})
     assert r.status_code == 422
+
+
+def test_enroll_passes_grayscale_flag_from_settings(monkeypatch):
+    pid = _make_player()
+    monkeypatch.setattr(face_mod, "models_available", lambda: True)
+    monkeypatch.setattr(face_mod, "decode_data_url", lambda s: "img")
+    captured = {}
+    monkeypatch.setattr(face_mod, "detect_and_embed",
+                        lambda img, grayscale=False: captured.update(g=grayscale) or [0.1] * 128)
+
+    import app.routers.settings as settings_mod
+    s = Settings.defaults()
+    s.camera.grayscale = True
+    monkeypatch.setattr(settings_mod, "load_settings", lambda: s)
+
+    r = client.post(f"/api/players/{pid}/face", json={"imageDataUrl": "data:image/jpeg;base64,AAAA"})
+    assert r.status_code == 200
+    assert captured.get("g") is True

@@ -19,6 +19,7 @@ class DetectionSettings(BaseModel):
     personConf: float = cfg.PERSON_CONFIDENCE
     ankleConf: float = cfg.ANKLE_CONFIDENCE
     shuttleConf: float = cfg.SHUTTLE_CONFIDENCE
+    faceMatchThreshold: float = cfg.FACE_MATCH_THRESHOLD
     roboflowApiKey: str = ""
 
 

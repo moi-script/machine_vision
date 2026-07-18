@@ -18,6 +18,7 @@ from config.settings import (
     PLAYER_ZONES, DIFFICULTY, PERSON_CONFIDENCE, RETURN_CONFIRM_FRAMES,
     GRAYSCALE, FRAME_WIDTH, FRAME_HEIGHT, CAMERA_INDEX,
     SHUTTLE_SOURCE, SHUTTLE_MODEL_PATH, SHUTTLE_CONFIDENCE,
+    FACE_MATCH_THRESHOLD,
 )
 from utils.zones import (
     get_ankle_position, get_zone_from_position, get_player_in_zone,
@@ -33,6 +34,21 @@ from utils.display import (
 from app.streamer import buffer as frame_buffer
 from app.events import hub
 from app import face
+
+
+def _open_capture(source):
+    """Open a cv2.VideoCapture.
+
+    On Windows, integer camera indices are opened with the DirectShow (DSHOW)
+    backend so that CAMERA_INDEX matches the ordering seen by USB devices.
+    OpenCV's default Windows backend (MSMF) enumerates cameras in a different
+    order than DSHOW — under MSMF the built-in webcam and the external USB
+    module can swap indices — so we pin int sources to DSHOW for a stable,
+    predictable index. File-path sources use the default backend unchanged.
+    """
+    if os.name == "nt" and isinstance(source, int):
+        return cv2.VideoCapture(source, cv2.CAP_DSHOW)
+    return cv2.VideoCapture(source)
 
 
 def _iso() -> str:
@@ -67,6 +83,9 @@ class DrillEngine:
         self._track_identity: dict = {}
         self._last_reco: dict = {}
         self._reco_interval = 1.0  # seconds between recognition attempts per track
+        # Recognition tunables, refreshed from settings at each (re)start.
+        self._reco_threshold = FACE_MATCH_THRESHOLD
+        self._reco_grayscale = GRAYSCALE
         # Live-tunable thresholds (bound on the instance so reload_settings()
         # actually reaches the loop closures — module-level imports won't).
         self._person_conf = PERSON_CONFIDENCE
@@ -189,16 +208,16 @@ class DrillEngine:
             if crop.size == 0:
                 print(f"[RECO] track {track_id}: empty crop", flush=True)  # DEBUG
                 return
-            emb = face.detect_and_embed(crop)
+            emb = face.detect_and_embed(crop, grayscale=self._reco_grayscale)
             if emb is None:
                 print(f"[RECO] track {track_id}: NO FACE detected in crop "
                       f"{crop.shape}", flush=True)  # DEBUG
                 return
-            hit = face.best_match(emb, self._enrolled)
+            hit = face.best_match(emb, self._enrolled, threshold=self._reco_threshold)
             scores = {pid: round(face.cosine(emb, e), 3)
                       for pid, e in self._enrolled.items()}  # DEBUG
             print(f"[RECO] track {track_id}: scores={scores} "
-                  f"threshold=0.363 hit={hit}", flush=True)  # DEBUG
+                  f"threshold={self._reco_threshold} hit={hit}", flush=True)  # DEBUG
             if hit is not None:
                 pid, score = hit
                 self._track_identity[track_id] = pid
@@ -286,10 +305,20 @@ class DrillEngine:
         # Live-apply thresholds via instance attrs (the loop closures read these).
         self._person_conf = s.detection.personConf
         self._shuttle_conf = s.detection.shuttleConf
+        self._reco_threshold = s.detection.faceMatchThreshold
         # ZONE_WEAK_THRESHOLD was bound at import into utils.scoring — patch it
         # on the module that actually holds it so weak-zone logic updates.
         import utils.scoring as scoring_mod
         scoring_mod.ZONE_WEAK_THRESHOLD = s.drill.weakZoneThreshold
+        # Re-run calibration live so POST /api/calibration moves the court/zone
+        # overlays immediately instead of waiting for a restart. Keep the old
+        # homography on bad corners — a running drill must not lose its geometry.
+        if s.court.corners:
+            try:
+                build_homography(s.court.corners)
+            except ValueError as exc:
+                hub.broadcast({"type": "error",
+                                "message": f"[CALIBRATION] {exc}"})
         self._needs_restart = True  # structural (camera) changes need a restart
 
     def arm(self) -> None:
@@ -339,6 +368,9 @@ class DrillEngine:
             t.join(timeout=3.0)
         self._thread = None
         self._state = "idle"
+        # Drop the retained frame so /api/stream stops serving a frozen image of
+        # a drill that is no longer running.
+        frame_buffer.clear()
         self._emit_status()
 
     # ---- helpers ----
@@ -352,7 +384,7 @@ class DrillEngine:
         latest = frame_buffer.latest()
         if latest is not None and self._state != "idle":
             return latest
-        cap = cv2.VideoCapture(CAMERA_INDEX)
+        cap = _open_capture(CAMERA_INDEX)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
         ok, frame = cap.read()
@@ -450,6 +482,8 @@ class DrillEngine:
         # cards actually take effect — the "requires a restart" hint is real.
         cam_source, cam_width, cam_height, cam_grayscale = (
             CAMERA_INDEX, FRAME_WIDTH, FRAME_HEIGHT, GRAYSCALE)
+        # None -> build_homography() falls back to config.settings.COURT_CORNERS.
+        court_corners = None
         try:
             from app.routers.settings import load_settings
             s = load_settings()
@@ -462,6 +496,13 @@ class DrillEngine:
             cam_source = self._norm_source(s.camera.source)
             cam_width, cam_height = s.camera.width, s.camera.height
             cam_grayscale = s.camera.grayscale
+            self._reco_threshold = s.detection.faceMatchThreshold
+            self._reco_grayscale = cam_grayscale
+            # The Settings page / calibrate endpoint persists corners to Mongo.
+            # Without this the homography was always built from the hardcoded
+            # config constants, so calibration silently had no effect and every
+            # court/zone overlay drew at the wrong place.
+            court_corners = s.court.corners or None
         except Exception as exc:  # noqa: BLE001 - fall back to config constants
             hub.broadcast({"type": "error",
                             "message": f"[SETTINGS] using defaults: {exc}"})
@@ -472,7 +513,7 @@ class DrillEngine:
         self._load_enrolled()
 
         try:
-            build_homography()
+            build_homography(court_corners)
         except ValueError as exc:
             self._start_error = f"[CALIBRATION] {exc}"
             self._camera = "unavailable"
@@ -482,7 +523,7 @@ class DrillEngine:
             return
 
         # ── Camera setup (inline open_camera(), substitution 1) ──────
-        cap = cv2.VideoCapture(cam_source)
+        cap = _open_capture(cam_source)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, cam_width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cam_height)
         if cam_grayscale and isinstance(cam_source, int):
@@ -661,6 +702,15 @@ class DrillEngine:
                 interval = self._interval
 
                 if self._state == "paused":
+                    # Pausing suspends the drill logic and detection — not the
+                    # view. Keep the court geometry on screen so a paused feed
+                    # still reads as a calibrated court instead of a bare camera
+                    # image. Player boxes/skeletons are absent by design here:
+                    # detection doesn't run while paused.
+                    draw_court_zone(frame)
+                    draw_net(frame)
+                    draw_zones(frame)
+                    draw_status(frame, "PAUSED", (0, 200, 255))
                     self._publish(frame)
                     time.sleep(0.03)
                     continue

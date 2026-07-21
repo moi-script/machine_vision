@@ -34,6 +34,10 @@ from utils.display import (
 from app.streamer import buffer as frame_buffer
 from app.events import hub
 from app import face
+from utils.skill_profile import SkillAccumulator, evaluate_rubric, default_config
+from config.settings import (
+    SKILL_KP_CONF, SKILL_BBOX_MIN_H, SKILL_REACT_DIST, SKILL_SWING_SPEED,
+)
 
 
 def _open_capture(source):
@@ -83,6 +87,9 @@ class DrillEngine:
         self._track_identity: dict = {}
         self._last_reco: dict = {}
         self._reco_interval = 1.0  # seconds between recognition attempts per track
+        # Per-athlete skill accumulation for this drill (Task 6).
+        self._skill_accs: dict[str, SkillAccumulator] = {}
+        self._skill_log_last = 0.0
         # Recognition tunables, refreshed from settings at each (re)start.
         self._reco_threshold = FACE_MATCH_THRESHOLD
         self._reco_grayscale = GRAYSCALE
@@ -227,6 +234,65 @@ class DrillEngine:
             print(f"[RECO] track {track_id}: exception {exc!r}", flush=True)  # DEBUG
             return
 
+    def _skill_for(self, aid: str) -> SkillAccumulator:
+        acc = self._skill_accs.get(aid)
+        if acc is None:
+            acc = SkillAccumulator(SKILL_KP_CONF, SKILL_BBOX_MIN_H,
+                                   SKILL_REACT_DIST, SKILL_SWING_SPEED)
+            self._skill_accs[aid] = acc
+        return acc
+
+    def _is_real_athlete(self, track_id) -> bool:
+        # Only accumulate for a resolved player id (recognized face or single
+        # -trainee attribution), never a raw track id.
+        return self._athlete_id(track_id) != str(track_id)
+
+    def _skill_add_frame(self, track_id, box, keypoints, court_ankle, now):
+        try:
+            if not self._is_real_athlete(track_id):
+                return
+            aid = self._athlete_id(track_id)
+            self._skill_for(aid).add_frame(keypoints, box, court_ankle, now)
+        except Exception as exc:  # noqa: BLE001 - analytics must never kill the loop
+            print(f"[SKILL] add_frame error {exc!r}", flush=True)
+
+    def _flush_skill_profiles(self) -> None:
+        """Merge each athlete's session aggregates into their cumulative Mongo
+        skillProfile, recompute the tier, append a history snapshot, log it."""
+        from datetime import datetime, timezone
+        from app import db
+        cfg = default_config()
+        for aid, acc in self._skill_accs.items():
+            try:
+                snap = acc.snapshot()
+                doc = db.players().find_one({"_id": aid}) or {}
+                prev = (doc.get("skillProfile") or {}).get("cumulative", {})
+                cumulative = SkillAccumulator.merge_snapshot(prev, snap)
+                result = evaluate_rubric(cumulative, cfg)
+                now_iso = datetime.now(timezone.utc).isoformat()
+                computed = {**result, "updatedAt": now_iso}
+                db.players().update_one({"_id": aid}, {
+                    "$set": {"skillProfile": {"cumulative": cumulative,
+                                              "computed": computed}},
+                    "$push": {"skillHistory": {
+                        "at": now_iso, "sessionId": self._session_id,
+                        "composite": result["composite"], "tier": result["tier"],
+                        "families": result["families"]}},
+                })
+                print(f"[SKILL] {aid} session merged -> cumulative samples: "
+                      f"move={cumulative['sampleCounts'].get('move',0)} "
+                      f"posture={cumulative['sampleCounts'].get('posture',0)} "
+                      f"stroke={cumulative['sampleCounts'].get('stroke',0)} "
+                      f"accuracy={cumulative.get('shots',0)}", flush=True)
+                print(f"[SKILL] {aid} rubric: {result['families']} -> "
+                      f"composite={result['composite']} tier={result['tier'].upper()}",
+                      flush=True)
+                print(f"[SKILL] {aid} skillProfile written to Mongo "
+                      f"(history len={len(doc.get('skillHistory', [])) + 1})",
+                      flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[SKILL] flush error for {aid}: {exc!r}", flush=True)
+
     def _athlete_id(self, track_id) -> str:
         """Map a YOLO track id to the enrolled athlete id when attribution is
         active, else fall back to the stringified track id.
@@ -343,6 +409,7 @@ class DrillEngine:
         self._track_identity = {}
         self._last_reco = {}
         self._scores = PlayerScores()
+        self._skill_accs = {}
         self._stop_flag = False
         self._state = "running"
         self._start_error = None
@@ -659,6 +726,11 @@ class DrillEngine:
 
                 scores.record_shot(target_id, zone_name)
                 self._persist_shot(self._athlete_id(target_id), zone_name)
+                if self._is_real_athlete(target_id):
+                    aid = self._athlete_id(target_id)
+                    self._skill_for(aid).on_shot()
+                    self._skill_for(aid).on_feeder_fired(
+                        time.time(), self._zone_to_frontend(zone_name))
                 total_shots_fired += 1
 
                 shuttle_crossed = False
@@ -742,6 +814,19 @@ class DrillEngine:
                     if self._armed and not d.get("in_court"):
                         continue
                     self._recognize(d["id"], d["box"], frame)
+                    court_ankle = player_positions.get(d["id"])
+                    self._skill_add_frame(d["id"], d["box"], d["keypoints"],
+                                          court_ankle, now)
+                    if (now - self._skill_log_last > 1.0
+                            and self._is_real_athlete(d["id"])):
+                        self._skill_log_last = now
+                        from utils import pose_features as _pf
+                        bh = _pf.bbox_height(d["box"])
+                        aid = self._athlete_id(d["id"])
+                        print(f"[SKILL] {aid} frameseen: bbox_h={bh:.0f}px "
+                              f"posture={'SAMPLED' if bh >= SKILL_BBOX_MIN_H else 'gated(far)'} "
+                              f"move={'SAMPLED' if court_ankle else 'no-court-pos'}",
+                              flush=True)
 
                 # ── Detect shuttle (async) ───────────────────────────
                 shuttle_worker.submit(frame.copy())
@@ -834,6 +919,9 @@ class DrillEngine:
                                 scores.record_score(active_target_id, active_target_zone)
                                 self._persist_score(self._athlete_id(active_target_id),
                                                     active_target_zone)
+                                if self._is_real_athlete(active_target_id):
+                                    self._skill_for(
+                                        self._athlete_id(active_target_id)).on_score()
                                 hub.broadcast({"type": "score",
                                                 "playerId": str(active_target_id),
                                                 "zone": active_target_zone,
@@ -881,6 +969,7 @@ class DrillEngine:
                     shuttle_worker.stop()
                 except Exception:  # noqa: BLE001
                     pass
+            self._flush_skill_profiles()
             self._state = "idle"
             self._emit_status()
 

@@ -448,7 +448,11 @@ class DrillEngine:
                     self._serverless_warned = True
                 return None
             try:
-                return extract_shuttle_xy(result)  # (x, y) centre, or None
+                xy = extract_shuttle_xy(result)  # (x, y) centre, or None
+                if xy is not None:
+                    print(f"[SHUTTLE] serverless detection at "
+                          f"x={xy[0]:.0f} y={xy[1]:.0f}", flush=True)
+                return xy
             except Exception:  # noqa: BLE001
                 return None
 
@@ -460,8 +464,12 @@ class DrillEngine:
                 if boxes is None or len(boxes) == 0:
                     return None
                 best_i = int(boxes.conf.argmax())
+                conf = float(boxes.conf[best_i])
                 x1, y1, x2, y2 = boxes.xyxy[best_i].tolist()
-                return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+                cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+                print(f"[SHUTTLE] local detection at x={cx:.0f} y={cy:.0f} "
+                      f"conf={conf:.3f}", flush=True)
+                return cx, cy
             except Exception:  # noqa: BLE001
                 return None
 

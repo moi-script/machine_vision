@@ -196,3 +196,130 @@ class SkillAccumulator:
             out["stats"][k] = a.to_dict()
         out["coverage"] = sorted(out["coverage"])
         return out
+
+
+from config import settings as _cfg
+
+
+def default_config() -> dict:
+    return {
+        "refs": _cfg.SKILL_REFS,
+        "weights": _cfg.SKILL_FAMILY_WEIGHTS,
+        "family_min": _cfg.SKILL_FAMILY_MIN_SAMPLES,
+        "tiers": _cfg.SKILL_TIERS,
+        "min_shots": _cfg.SKILL_MIN_SHOTS,
+    }
+
+
+def _norm(value, ref):
+    t = ref["type"]
+    if t == "monotonic":
+        lo, hi = ref["lo"], ref["hi"]
+        frac = 0.0 if hi == lo else (value - lo) / (hi - lo)
+        frac = max(0.0, min(1.0, frac))
+        if ref.get("invert"):
+            frac = 1.0 - frac
+        return 100.0 * frac
+    if t == "target":
+        d = abs(value - ref["target"])
+        return 100.0 * max(0.0, 1.0 - d / ref["tol"])
+    if t == "consistency":
+        hi = ref["hi"]
+        frac = 0.0 if hi == 0 else 1.0 - (value / hi)
+        return 100.0 * max(0.0, min(1.0, frac))
+    return 0.0
+
+
+def _mean(stats, key):
+    return RunningStat.from_dict(stats.get(key)).mean()
+
+
+def _std(stats, key):
+    return RunningStat.from_dict(stats.get(key)).std()
+
+
+def evaluate_rubric(profile: dict, config: dict | None = None) -> dict:
+    cfg = config or default_config()
+    refs = cfg["refs"]
+    stats = profile.get("stats", {})
+    counts = profile.get("sampleCounts", {})
+    shots = profile.get("shots", 0)
+    scores = profile.get("scores", 0)
+
+    breakdown = {}
+
+    def score(metric, value):
+        s = _norm(value, refs[metric])
+        breakdown[metric] = round(s, 1)
+        return s
+
+    # movement
+    move_parts = []
+    if counts.get("move", 0) > 0:
+        move_parts.append(score("move_speed", _mean(stats, "move_speed")))
+        move_parts.append(score("coverage", len(profile.get("coverage", []))))
+        if RunningStat.from_dict(stats.get("reaction")).n > 0:
+            move_parts.append(score("reaction", _mean(stats, "reaction")))
+    # accuracy
+    acc_parts = []
+    if shots > 0:
+        acc_parts.append(score("accuracy", 100.0 * scores / shots))
+    # stroke
+    stroke_parts = []
+    if RunningStat.from_dict(stats.get("swing_peak")).n > 0:
+        stroke_parts.append(score("swing_consistency", _std(stats, "swing_peak")))
+    # posture
+    post_parts = []
+    if counts.get("posture", 0) > 0:
+        if RunningStat.from_dict(stats.get("knee")).n > 0:
+            post_parts.append(score("knee", _mean(stats, "knee")))
+        if RunningStat.from_dict(stats.get("stance")).n > 0:
+            post_parts.append(score("stance", _mean(stats, "stance")))
+        if RunningStat.from_dict(stats.get("knee")).n > 0:
+            post_parts.append(score("posture_consistency", _std(stats, "knee")))
+
+    families = {
+        "move": sum(move_parts) / len(move_parts) if move_parts else None,
+        "accuracy": sum(acc_parts) / len(acc_parts) if acc_parts else None,
+        "stroke": sum(stroke_parts) / len(stroke_parts) if stroke_parts else None,
+        "posture": sum(post_parts) / len(post_parts) if post_parts else None,
+    }
+
+    def _families_out():
+        return {k: (round(v, 1) if v is not None else None)
+                for k, v in families.items()}
+
+    # ---- min-data gate ----
+    if shots < cfg["min_shots"]:
+        return {"composite": None, "tier": "Unranked",
+                "families": _families_out(), "breakdown": breakdown}
+
+    # ---- data-weighted composite (redistribute thin families) ----
+    fam_min = cfg["family_min"]
+    total_w = 0.0
+    acc = 0.0
+    for fam, fam_score in families.items():
+        if fam_score is None:
+            continue
+        if fam == "accuracy":
+            if shots < fam_min.get("accuracy", 0):
+                continue
+        elif counts.get(fam, 0) < fam_min.get(fam, 0):
+            continue
+        w = cfg["weights"].get(fam, 0.0)
+        acc += w * fam_score
+        total_w += w
+
+    if total_w == 0:
+        return {"composite": None, "tier": "Unranked",
+                "families": _families_out(), "breakdown": breakdown}
+
+    composite = acc / total_w
+    tier = "Beginner"
+    for cutoff, name in cfg["tiers"]:
+        if composite >= cutoff:
+            tier = name
+            break
+
+    return {"composite": round(composite, 1), "tier": tier,
+            "families": _families_out(), "breakdown": breakdown}

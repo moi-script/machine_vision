@@ -102,3 +102,34 @@ def test_merge_snapshot_accumulates_counts():
     merged = SkillAccumulator.merge_snapshot(merged, snap2)
     assert merged["shots"] == 3
     assert merged["scores"] == 2
+
+
+from utils.skill_profile import evaluate_rubric
+
+
+def test_rubric_unranked_below_min_shots():
+    prof = {"shots": 3, "scores": 2, "sampleCounts": {}, "stats": {}, "coverage": []}
+    out = evaluate_rubric(prof)
+    assert out["tier"] == "Unranked"
+    assert out["composite"] is None
+
+
+def test_rubric_high_accuracy_maps_to_a_real_tier():
+    # 100 shots, 85 scores -> accuracy 85% -> high accuracy family score
+    prof = {"shots": 100, "scores": 85,
+            "sampleCounts": {"accuracy": 100, "move": 0, "stroke": 0, "posture": 0},
+            "coverage": [], "stats": {}}
+    out = evaluate_rubric(prof)
+    assert out["composite"] is not None
+    assert out["tier"] in {"Beginner", "Novice", "Intermediate", "Advanced", "Expert"}
+    assert out["families"]["accuracy"] > 80
+
+
+def test_rubric_skips_thin_families_via_redistribution():
+    # only accuracy has data; move/stroke/posture are empty and must not drag it
+    prof = {"shots": 100, "scores": 90,
+            "sampleCounts": {"accuracy": 100, "move": 0, "stroke": 0, "posture": 0},
+            "coverage": [], "stats": {}}
+    out = evaluate_rubric(prof)
+    # composite should equal the accuracy family score (only qualifying family)
+    assert out["composite"] == pytest.approx(out["families"]["accuracy"], abs=1e-6)

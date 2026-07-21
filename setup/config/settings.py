@@ -96,3 +96,50 @@ PLAYER_ZONES = {
     "back_center":  (_CW3,      _CL2,  2 * _CW3,  COURT_L),
     "back_right":   (2 * _CW3,  _CL2,  COURT_W,   COURT_L),
 }
+
+
+# ============================================================
+# Player skill ranking (rule-based rubric) — all tunable
+# See docs/superpowers/specs/2026-07-22-player-skill-ranking-design.md
+# ============================================================
+
+# --- Sampling gates ---
+SKILL_KP_CONF    = 0.5    # min keypoint confidence to use a fine (posture/stroke) point
+SKILL_BBOX_MIN_H = 200.0  # min person bbox height in px to sample posture/stroke (distance gate)
+SKILL_REACT_DIST = 20.0   # court-space ankle displacement that counts as "started moving"
+SKILL_SWING_SPEED = 3.0   # shoulder-relative wrist speed (units/sec) rising-edge = a swing
+SKILL_MIN_SHOTS  = 20     # min accumulated shots before any tier is assigned (else Unranked)
+
+# --- Per-metric normalization references ---
+# type "monotonic": linear lo->hi mapped to 0->100 (invert=True flips it)
+# type "target":    full score inside [target +/- tol], decaying linearly outside
+# type "consistency": std mapped hi->0 / 0->100 (lower std = higher score)
+SKILL_REFS = {
+    # movement family
+    "move_speed": {"type": "monotonic", "lo": 0.5, "hi": 6.0},
+    "coverage":   {"type": "monotonic", "lo": 1.0, "hi": 6.0},
+    "reaction":   {"type": "monotonic", "lo": 0.3, "hi": 1.5, "invert": True},
+    # accuracy family
+    "accuracy":   {"type": "monotonic", "lo": 20.0, "hi": 90.0},
+    # stroke family
+    "swing_consistency": {"type": "consistency", "hi": 4.0},
+    # posture family
+    "knee":       {"type": "target", "target": 150.0, "tol": 40.0},
+    "stance":     {"type": "target", "target": 1.4, "tol": 0.9},
+    "posture_consistency": {"type": "consistency", "hi": 25.0},
+}
+
+# --- Family weights (scaled by data sufficiency at eval time) ---
+SKILL_FAMILY_WEIGHTS = {"move": 0.30, "accuracy": 0.30, "stroke": 0.20, "posture": 0.20}
+
+# --- Min reliable samples for a family to count toward the composite ---
+SKILL_FAMILY_MIN_SAMPLES = {"move": 30, "accuracy": 20, "stroke": 5, "posture": 20}
+
+# --- Tier bands: (min_composite_inclusive, name), highest first ---
+SKILL_TIERS = [
+    (80.0, "Expert"),
+    (60.0, "Advanced"),
+    (40.0, "Intermediate"),
+    (20.0, "Novice"),
+    (0.0,  "Beginner"),
+]

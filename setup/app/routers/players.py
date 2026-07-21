@@ -70,6 +70,25 @@ def get_player(pid: str):
     return _strip_embedding(doc)
 
 
+@router.get("/{pid}/skill")
+def get_skill(pid: str):
+    doc = db.players().find_one({"_id": pid})
+    if not doc:
+        raise HTTPException(404, "player not found")
+    profile = doc.get("skillProfile") or {}
+    computed = profile.get("computed") or {}
+    return {
+        "playerId": pid,
+        "tier": computed.get("tier", "Unranked"),
+        "composite": computed.get("composite"),
+        "families": computed.get("families", {}),
+        "breakdown": computed.get("breakdown", {}),
+        "sampleCounts": (profile.get("cumulative") or {}).get("sampleCounts", {}),
+        "updatedAt": computed.get("updatedAt"),
+        "history": doc.get("skillHistory", []),
+    }
+
+
 @router.patch("/{pid}")
 def patch_player(pid: str, body: PlayerPatch):
     changes = {k: v for k, v in body.model_dump().items() if v is not None}

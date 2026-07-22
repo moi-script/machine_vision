@@ -256,6 +256,40 @@ class DrillEngine:
         except Exception as exc:  # noqa: BLE001 - analytics must never kill the loop
             print(f"[SKILL] add_frame error {exc!r}", flush=True)
 
+    def _log_skill_frame(self, d, court_ankle) -> None:
+        """Print a live, per-second tracking readout for one detection so the
+        terminal can be used to verify tracking + skill accumulation. Prints for
+        every in-court track — resolved athletes AND raw tracks — so it's obvious
+        when nothing is accumulating (and why)."""
+        try:
+            from utils import pose_features as _pf
+            tid = d["id"]
+            bh = _pf.bbox_height(d["box"])
+            if tid in self._track_identity:
+                aid, mode = self._track_identity[tid], "face"
+            elif self._attributed_player:
+                aid, mode = self._attributed_player, "attributed"
+            else:
+                aid, mode = str(tid), "UNRESOLVED"
+            posture = "SAMPLED" if bh >= SKILL_BBOX_MIN_H else "gated(far)"
+            move = "SAMPLED" if court_ankle else "no-court-pos"
+            line = (f"[SKILL] track#{tid} -> {aid} ({mode}) "
+                    f"bbox_h={bh:.0f}px posture={posture} move={move}")
+            acc = self._skill_accs.get(aid)
+            if acc is not None:
+                snap = acc.snapshot()
+                sc = snap.get("sampleCounts", {})
+                live = evaluate_rubric(snap, default_config())
+                line += (f" | samples move={sc.get('move', 0)} "
+                         f"posture={sc.get('posture', 0)} "
+                         f"stroke={sc.get('stroke', 0)} swings={snap.get('swings', 0)}"
+                         f" -> composite={live['composite']} tier={live['tier']}")
+            elif mode == "UNRESOLVED":
+                line += " | NOT accumulating — recognize a face or assign exactly 1 player"
+            print(line, flush=True)
+        except Exception as exc:  # noqa: BLE001 - logging must never kill the loop
+            print(f"[SKILL] live-log error {exc!r}", flush=True)
+
     def _flush_skill_profiles(self) -> None:
         """Merge each athlete's session aggregates into their cumulative Mongo
         skillProfile, recompute the tier, append a history snapshot, log it."""
@@ -805,6 +839,14 @@ class DrillEngine:
                           flush=True)
                     self._dbg_last = now
 
+                # Once per second, emit a live tracking readout for every
+                # in-court player so the terminal shows what's actually being
+                # tracked — including tracks that DON'T resolve to an enrolled
+                # athlete (which silently accumulate nothing).
+                _do_skill_log = now - self._skill_log_last > 1.0
+                if _do_skill_log:
+                    self._skill_log_last = now
+
                 for d in detections:
                     # During identity acquisition (unarmed) recognize anyone the
                     # camera sees — the athlete needn't stand in the calibrated
@@ -817,16 +859,8 @@ class DrillEngine:
                     court_ankle = player_positions.get(d["id"])
                     self._skill_add_frame(d["id"], d["box"], d["keypoints"],
                                           court_ankle, now)
-                    if (now - self._skill_log_last > 1.0
-                            and self._is_real_athlete(d["id"])):
-                        self._skill_log_last = now
-                        from utils import pose_features as _pf
-                        bh = _pf.bbox_height(d["box"])
-                        aid = self._athlete_id(d["id"])
-                        print(f"[SKILL] {aid} frameseen: bbox_h={bh:.0f}px "
-                              f"posture={'SAMPLED' if bh >= SKILL_BBOX_MIN_H else 'gated(far)'} "
-                              f"move={'SAMPLED' if court_ankle else 'no-court-pos'}",
-                              flush=True)
+                    if _do_skill_log:
+                        self._log_skill_frame(d, court_ankle)
 
                 # ── Detect shuttle (async) ───────────────────────────
                 shuttle_worker.submit(frame.copy())

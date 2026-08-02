@@ -5,7 +5,7 @@
 # ============================================================
 
 # --- Camera / video source ---
-CAMERA_INDEX    = 1        # USB camera index (0 = built-in laptop cam, 1 = external USB cam)
+CAMERA_INDEX    = 0        # USB camera index (0 = built-in laptop cam, 1 = external USB cam)
 # Set to a video file path (e.g. "clips/rally.mp4") to run on recorded footage
 # instead of the live webcam. None = use the live CAMERA_INDEX webcam.
 # Both calibrate.py and main.py honor this, and a --source CLI flag overrides it.
@@ -16,7 +16,7 @@ FPS_TARGET      = 10       # target FPS for Raspberry Pi later
 
 # OV9281 is grayscale — convert for YOLO compatibility.
 # Set True for the OV9281; False for a normal color webcam (e.g. laptop cam).
-GRAYSCALE       = True
+GRAYSCALE       = False
 
 # --- Difficulty settings (seconds between shots) ---
 DIFFICULTY = {

@@ -7,6 +7,14 @@
 models/*.pt
 models/*.onnx
 
+# Roboflow dataset exports + local training runs (large, reproducible from Roboflow)
+datasets/
+runs/
+
+# Training console output
+runs_train*.log
+runs_train*.err
+
 # Roboflow workflow image outputs written to disk
 rf_*.jpg
 calibration.jpg

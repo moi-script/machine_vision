@@ -5,9 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import db
 from app.events import hub
-
+from app.routers import esp32_enroll
 app = FastAPI(title="AeroSense Backend")
-
 app.add_middleware(
     CORSMiddleware,
     # Local-only app: allow any localhost port so a Vite dev server that
@@ -25,6 +24,7 @@ app.include_router(sessions.router)
 app.include_router(settings_router.router)
 app.include_router(control.router)
 app.include_router(control.media_router)
+app.include_router(esp32_enroll.router)
 
 
 @app.get("/api/health")

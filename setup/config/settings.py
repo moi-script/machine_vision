@@ -27,13 +27,18 @@ DIFFICULTY = {
 
 # --- Shuttlecock detection source ---
 # Where shuttle detections come from:
-#   "local"      → models/shuttlecock.pt (fast, offline; needs a paid export)
-#   "serverless" → Roboflow direct model over HTTP (FREE, but ~0.1–0.4s/frame
-#                  network latency, so the drill loop runs at only a few FPS)
+#   "local"      → models/shuttlecock.pt, ~99 ms/frame on this CPU, fully offline
+#   "serverless" → Roboflow direct model over HTTP (FREE, but 1.2–3.9 s/frame
+#                  measured round trip, so the drill loop runs at well under 1 FPS)
 #   "off"        → no shuttle detection (player/zone logic only)
-SHUTTLE_SOURCE        = "serverless"
+#
+# "local" no longer needs a paid Roboflow export: scripts/train_shuttlecock.py
+# trains our own yolov8n on the free dataset export. Current weights are epoch 55
+# of that run — mAP50 0.898, mAP50-95 0.389 on a 20-image val split.
+SHUTTLE_SOURCE        = "local"
 
-# Path used when SHUTTLE_SOURCE = "local".
+# Path used when SHUTTLE_SOURCE = "local". Relative to the repo root, so run
+# main.py / uvicorn from C:\thesis\setup or this will not resolve.
 SHUTTLE_MODEL_PATH    = "models/shuttlecock.pt"
 
 # --- Detection thresholds ---
@@ -143,3 +148,9 @@ SKILL_TIERS = [
     (20.0, "Novice"),
     (0.0,  "Beginner"),
 ]
+
+
+
+
+ESP32_CAM_IP: str = "10.223.180.12"
+ESP32_CAM_TIMEOUT_S: float = 5.0

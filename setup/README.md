@@ -180,10 +180,15 @@ H     = switch to hard
 There are several ways to run your trained shuttlecock model. Pick based on
 whether you need real-time speed and whether you can download weights.
 
-> **Recommended when on the free plan:** Option D — the direct model over
-> serverless. It works today, needs no paid export, and sidesteps the
-> workflow's compile bug. Set `SHUTTLE_SOURCE = "serverless"` in
-> `config/settings.py` and run `python main.py`.
+> **Recommended (and the current default):** Option A — local weights. We train
+> our own yolov8n on the *free* dataset export via
+> `python scripts/train_shuttlecock.py`, so this no longer needs a paid plan.
+> It runs ~57 ms/frame offline versus 1.2–3.9 s per serverless round trip.
+> Set `SHUTTLE_SOURCE = "local"` in `config/settings.py` and run `python main.py`.
+>
+> Note: the API server reads `shuttleSource` from the persisted settings doc in
+> MongoDB, which **overrides** `config/settings.py`. Change it on the Settings
+> page (or via `PUT /api/settings`) as well, or the file edit will look ignored.
 
 ### Option D — Direct model over serverless (FREE, works now) ⭐
 
@@ -209,14 +214,21 @@ det = run_shuttlecock_model("https://example.com/rally.jpg", confidence=40)
 xy  = extract_shuttle_xy(det)   # (x, y) of top detection, or None
 ```
 
-### Option A — Local model weights (fastest, but needs a paid plan)
+### Option A — Local model weights (fastest, free) ⭐
+
+Downloading Roboflow's *trained* weights needs a paid plan, but exporting the
+*dataset* is free on a public project — so we train our own:
 
 1. Record footage of your feeder setup from your side-view camera
 2. Upload to Roboflow → annotate shuttlecock
-3. Train YOLO model
-4. Export/**download weights** as YOLO PyTorch (.pt) — *requires a paid
-   Roboflow plan*
-5. Place them at `models/shuttlecock.pt`
+3. Export the **dataset** (YOLOv8 format) to `datasets/shuttlecock-1/`
+4. `python scripts/train_shuttlecock.py`  (`--resume` to continue a killed run)
+5. It copies `best.pt` to `models/shuttlecock.pt` automatically
+
+Track progress with `python scripts/train_status.py`. The current weights are
+epoch 55 of a 2.1 h CPU run: mAP50 0.898, mAP50-95 0.389 on a 20-image val
+split. The low mAP50-95 is the usual small-object signature — boxes are loose
+but detection is reliable, which is what the zone logic needs.
 
 Runs on-device every frame, no network. When the file exists, `main.py`
 loads it automatically (`SHUTTLE_MODEL_PATH` in `config/settings.py`) and

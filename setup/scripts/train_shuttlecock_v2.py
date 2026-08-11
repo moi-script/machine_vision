@@ -54,14 +54,28 @@ def main() -> int:
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--max-train-images", type=int, default=1200)
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--data", default=DATA,
+                    help="data.yaml to train against. Point this at a "
+                         "data_selected.yaml from select_training_subset.py to "
+                         "train on a size-matched subset.")
+    ap.add_argument("--name", default=RUN_NAME, help="run directory name")
+    ap.add_argument("--deploy-to", default=DEPLOY_TO,
+                    help="where to copy best.pt. Defaults to "
+                         "models/shuttlecock_v2.pt - point elsewhere to keep "
+                         "existing weights for comparison.")
     args = ap.parse_args()
 
-    if not os.path.isfile(DATA):
-        print(f"[ERROR] dataset not found at {DATA}", file=sys.stderr)
+    data = args.data
+    # An explicit --data already carries its own curated image list, so the
+    # `fraction` subsample would cut it a second time.
+    preselected = os.path.abspath(data) != os.path.abspath(DATA)
+
+    if not os.path.isfile(data):
+        print(f"[ERROR] dataset not found at {data}", file=sys.stderr)
         print("        run: python scripts/fetch_shuttle_v2.py", file=sys.stderr)
         return 1
 
-    last = os.path.join(PROJECT, RUN_NAME, "weights", "last.pt")
+    last = os.path.join(PROJECT, args.name, "weights", "last.pt")
     if args.resume:
         if not os.path.isfile(last):
             print(f"[ERROR] --resume given but no checkpoint at {last}",
@@ -69,32 +83,45 @@ def main() -> int:
             return 1
         print(f"[RESUME] continuing from {last}")
         YOLO(last).train(resume=True)
-        return _deploy()
+        return _deploy(args.name, args.deploy_to)
 
-    n = _count_train_images()
-    if n == 0:
-        print(f"[ERROR] no training images under datasets/shuttle-v2/train/images",
-              file=sys.stderr)
-        return 1
-    fraction = min(1.0, args.max_train_images / n)
-    used = int(n * fraction)
+    if preselected:
+        # The list in --data is already the curated selection.
+        with open(data) as fh:
+            listed = [l.split(":", 1)[1].strip() for l in fh
+                      if l.startswith("train:")]
+        n = sum(1 for _ in open(listed[0])) if listed and os.path.isfile(listed[0]) else 0
+        fraction, used = 1.0, n
+        print(f"[PLAN] using preselected list from {data} ({n} images, no subsample)")
+    else:
+        n = _count_train_images()
+        if n == 0:
+            print("[ERROR] no training images under "
+                  "datasets/shuttle-v2/train/images", file=sys.stderr)
+            return 1
+        fraction = min(1.0, args.max_train_images / n)
+        used = int(n * fraction)
+        print(f"[PLAN] {n} train images available, using {used} "
+              f"(fraction={fraction:.3f})")
+
     hours = used * SEC_PER_IMAGE_PER_EPOCH * args.epochs / 3600.0
-    print(f"[PLAN] {n} train images available, using {used} (fraction={fraction:.3f})")
     print(f"[PLAN] {args.epochs} epochs -> ~{hours:.1f} h if it runs to the end "
           f"(early stopping usually cuts this)")
 
     model = YOLO("yolov8n.pt")
     model.train(
-        data=DATA,
+        data=data,
         epochs=args.epochs,
         patience=20,          # tighter than v1's 30 — the run is longer
-        imgsz=640,            # do NOT lower: median shuttle box is 28x19 px
+        imgsz=640,            # do NOT lower: on the size-selected smashspeed
+                              # subset the shuttle is >=20 px wide here, and
+                              # YOLOv8's finest stride is 8
         batch=args.batch,
         fraction=fraction,
         device="cpu",
         workers=4,
         project=PROJECT,
-        name=RUN_NAME,
+        name=args.name,
         exist_ok=True,
         seed=0,
         val=True,
@@ -112,17 +139,17 @@ def main() -> int:
         hsv_s=0.5,
         hsv_v=0.4,
     )
-    return _deploy()
+    return _deploy(args.name, args.deploy_to)
 
 
-def _deploy() -> int:
-    best = os.path.join(PROJECT, RUN_NAME, "weights", "best.pt")
+def _deploy(run_name: str, deploy_to: str) -> int:
+    best = os.path.join(PROJECT, run_name, "weights", "best.pt")
     if not os.path.isfile(best):
         print(f"[WARN] no best.pt at {best}", file=sys.stderr)
         return 1
-    os.makedirs(os.path.dirname(DEPLOY_TO), exist_ok=True)
-    shutil.copyfile(best, DEPLOY_TO)
-    print(f"[DONE] copied {best} -> {DEPLOY_TO}")
+    os.makedirs(os.path.dirname(deploy_to), exist_ok=True)
+    shutil.copyfile(best, deploy_to)
+    print(f"[DONE] copied {best} -> {deploy_to}")
     print("[NEXT] validate against YOUR camera before trusting any mAP number:")
     print("       point SHUTTLE_MODEL_PATH at models/shuttlecock_v2.pt and "
           "re-run the shuttle diagnostic.")

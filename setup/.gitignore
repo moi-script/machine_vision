@@ -7,6 +7,9 @@
 models/*.pt
 models/*.onnx
 
+# OpenVINO exports (regenerate from the .pt weights with export_openvino)
+*_openvino_model/
+
 # Roboflow dataset exports + local training runs (large, reproducible from Roboflow)
 datasets/
 runs/

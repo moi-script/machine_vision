@@ -1173,7 +1173,7 @@ Raw candidates are still mostly noise. A shuttlecock in flight is distinguishabl
   - `is_flight(track: list[Candidate], min_len: int = 5, max_len: int = 60, min_step: float = 6.0, min_span: float = 60.0, min_directness: float = 0.45) -> bool`
   - `bucket_frames(all_frames: list[int], flight_frames: set[int], reject_frames: set[int]) -> dict[int, str]` mapping frame → `"positive"` / `"negative"` / `"discard"`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `setup/tests/test_feeder_court_tracks.py`:
 
@@ -1263,12 +1263,12 @@ def test_positive_wins_over_discard_when_a_frame_has_both():
     assert out[1] == "positive"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd setup && python -m pytest tests/test_feeder_court_tracks.py -v`
 Expected: FAIL with `ImportError: cannot import name 'tracks'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `setup/utils/feeder_court/tracks.py`:
 
@@ -1399,12 +1399,12 @@ def bucket_frames(
     return out
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd setup && python -m pytest tests/test_feeder_court_tracks.py -v`
 Expected: PASS, 12 tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add setup/utils/feeder_court/tracks.py setup/tests/test_feeder_court_tracks.py

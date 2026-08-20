@@ -936,7 +936,7 @@ Median-background subtraction was tested on this footage and failed — the came
   - `Candidate` frozen dataclass with fields `frame: int, x: int, y: int, w: int, h: int, area: int, peak: float`
   - `candidate_boxes(diff: np.ndarray, frame_index: int, thresh: int = 22, min_dim: int = 3, max_dim: int = 45, min_area: int = 5, max_area: int = 700, ar_range: tuple[float, float] = (0.3, 3.0), min_fill: float = 0.32) -> list[Candidate]`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `setup/tests/test_feeder_court_motion.py`:
 
@@ -952,11 +952,16 @@ from utils.feeder_court import motion  # noqa: E402
 
 
 def _scene(shift=0):
-    """A textured static background with a bright vertical line, optionally shifted."""
+    """A textured static background with a bright vertical line, optionally shifted.
+
+    The WHOLE scene is rolled, texture included. Shifting only the line would
+    leave the texture unmoved, and the true translation between two such frames
+    is zero - phase correlation reports that correctly, at 0.94 confidence.
+    """
     rng = np.random.default_rng(0)
     img = (rng.random((180, 320)) * 40).astype(np.uint8)
-    img[:, 100 + shift:104 + shift] = 220          # a "court line"
-    return img
+    img[:, 100:104] = 220                          # a "court line"
+    return np.roll(img, shift, axis=1)
 
 
 def test_alignment_recovers_a_known_translation():
@@ -1008,9 +1013,12 @@ def test_candidate_boxes_rejects_extreme_aspect_ratios():
 
 def test_candidate_boxes_rejects_sparse_blobs():
     d = np.zeros((180, 320), dtype=np.uint8)
-    # A hollow ring: large bounding box, low fill.
-    d[60:90, 60:90] = 255
-    d[65:85, 65:85] = 0
+    # A diagonal streak: square bounding box, very low fill (0.098). A hollow
+    # ring does not work here - a 30x30 ring with a 5 px wall fills 0.556 of its
+    # box, well above min_fill. The streak is also the case min_fill uniquely
+    # catches: its bbox is square, so the aspect-ratio filter lets it through.
+    for i in range(30):
+        d[60 + i, 60 + i:63 + i] = 255
     assert motion.candidate_boxes(d, frame_index=0) == []
 
 
@@ -1022,12 +1030,12 @@ def test_candidate_boxes_records_peak_intensity():
     assert cands[0].peak == 140.0
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd setup && python -m pytest tests/test_feeder_court_motion.py -v`
 Expected: FAIL with `ImportError: cannot import name 'motion'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `setup/utils/feeder_court/motion.py`:
 
@@ -1136,12 +1144,12 @@ def candidate_boxes(
     return out
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd setup && python -m pytest tests/test_feeder_court_motion.py -v`
 Expected: PASS, 8 tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add setup/utils/feeder_court/motion.py setup/tests/test_feeder_court_motion.py

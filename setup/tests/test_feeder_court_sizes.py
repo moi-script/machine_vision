@@ -70,3 +70,18 @@ def test_gate_refuses_even_when_the_measured_clips_all_look_fine():
     # The danger case: present clips look great, absent ones were never checked.
     with pytest.raises(ValueError):
         sizes.gate_decision({"near": 30.0, "mid": 25.0})
+
+
+def test_gate_ignores_clips_outside_the_required_set():
+    # line_1/line_2 are a different dataset entirely and must not sway the gate.
+    assert sizes.gate_decision(
+        {"near": 20.0, "mid": 20.0, "far": 20.0, "line_1": 3.0}
+    ) == "stock"
+
+
+def test_gate_boundary_exactly_eight_is_not_a_stop():
+    assert sizes.gate_decision({"near": 8.0, "mid": 8.0, "far": 8.0}) == "p2"
+
+
+def test_gate_boundary_exactly_sixteen_is_stock():
+    assert sizes.gate_decision({"near": 16.0, "mid": 16.0, "far": 16.0}) == "stock"

@@ -59,7 +59,7 @@ def gate_decision(medians_by_clip: dict[str, float]) -> str:
             "zero hand-drawn boxes may be exactly the distance that forces a stop."
         )
 
-    medians = list(medians_by_clip.values())
+    medians = [medians_by_clip[c] for c in REQUIRED_CLIPS]
 
     if all(m < STOP_PX for m in medians):
         return "stop"

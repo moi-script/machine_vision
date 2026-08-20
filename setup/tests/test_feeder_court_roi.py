@@ -82,3 +82,9 @@ def test_apply_crop_preserves_pixels_for_colour_frames():
     band = roi.CropBand(top=100, height=64)
     out = roi.apply_crop(frame, band)
     assert np.array_equal(out, frame[100:164])
+
+
+def test_empty_box_arrays_are_handled():
+    band = roi.CropBand(top=192, height=448)
+    assert roi.shift_boxes_into_band(np.array([]), band).shape == (0, 4)
+    assert roi.boxes_fully_inside(np.array([]), band).tolist() == []

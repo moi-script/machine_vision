@@ -42,16 +42,18 @@ def do_sample(args: argparse.Namespace) -> None:
     os.makedirs(args.out, exist_ok=True)
     for clip in CLIPS:
         spans = [tuple(s) for s in spans_by_clip[clip]]
-        frames = sizes.evenly_spaced_frames(spans, args.per_clip)
+        frames = sorted(set(sizes.evenly_spaced_frames(spans, args.per_clip)))
         cap = cv2.VideoCapture(os.path.join(args.source, f"{clip}.mp4"))
+        written = 0
         for idx in frames:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ok, frame = cap.read()
             if not ok:
                 continue
             cv2.imwrite(os.path.join(args.out, f"{clip}_{idx:06d}.jpg"), frame)
+            written += 1
         cap.release()
-        print(f"{clip}: wrote {len(frames)} calibration frames", flush=True)
+        print(f"{clip}: wrote {written} calibration frames", flush=True)
 
     print(f"\nUpload {args.out} to Roboflow and box EVERY visible shuttlecock.")
     print("Export as YOLOv8, then run this script again with --mode measure.")
@@ -62,7 +64,8 @@ def do_measure(args: argparse.Namespace) -> None:
     unmeasured = []
     for clip in CLIPS:
         dims = []
-        for path in sorted(glob.glob(os.path.join(args.labels, f"{clip}_*.txt"))):
+        pattern = os.path.join(args.labels, "**", f"{clip}_*.txt")
+        for path in sorted(glob.glob(pattern, recursive=True)):
             with open(path) as fh:
                 for line in fh:
                     line = line.strip()
@@ -86,7 +89,7 @@ def do_measure(args: argparse.Namespace) -> None:
         print("not evidence that the model will work there - it may be the very")
         print("distance that makes this architecture unusable.")
         print("Either box those frames, or decide deliberately that the distance")
-        print("is out of scope and re-run with only the clips you are scoping to.")
+        print("is out of scope - which is a change to the spec's scope, not a CLI flag.")
         sys.exit(1)
 
     decision = sizes.gate_decision(medians)
@@ -110,15 +113,24 @@ def main() -> None:
     parser.add_argument("--source")
     parser.add_argument("--segments")
     parser.add_argument("--out")
-    parser.add_argument("--labels")
+    parser.add_argument(
+        "--labels",
+        help="Flat directory of YOLO label .txt files, or a Roboflow export root "
+        "(e.g. containing train/labels, valid/labels, test/labels) — searched recursively.",
+    )
     parser.add_argument("--per-clip", type=int, default=20)
     parser.add_argument("--img-w", type=int, default=1280)
     parser.add_argument("--img-h", type=int, default=720)
     args = parser.parse_args()
 
     if args.mode == "sample":
+        missing = [n for n in ("source", "segments", "out") if getattr(args, n) is None]
+        if missing:
+            parser.error("--mode sample requires: " + ", ".join("--" + m for m in missing))
         do_sample(args)
     else:
+        if args.labels is None:
+            parser.error("--mode measure requires: --labels")
         do_measure(args)
 
 

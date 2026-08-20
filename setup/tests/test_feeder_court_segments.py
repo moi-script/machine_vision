@@ -16,10 +16,7 @@ def test_head_and_tail_motion_are_excluded():
         np.full(5, 40.0),
     ])
     out = segments.usable_segments(profile, sample_step=15, threshold=15.0, min_frames=150)
-    assert len(out) == 1
-    start, end = out[0]
-    assert start >= 5 * 15
-    assert end <= 45 * 15
+    assert out[0] == (75, 675)
 
 
 def test_short_calm_runs_are_dropped():
@@ -39,8 +36,7 @@ def test_a_mid_clip_bump_splits_one_run_into_two():
         np.full(20, 2.0),
     ])
     out = segments.usable_segments(profile, sample_step=15, threshold=15.0, min_frames=150)
-    assert len(out) == 2
-    assert out[0][1] <= out[1][0]
+    assert out == [(0, 300), (360, 660)]
 
 
 def test_entirely_calm_profile_yields_one_full_span():

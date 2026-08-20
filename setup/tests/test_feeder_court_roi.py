@@ -67,3 +67,18 @@ def test_crop_then_shift_round_trips_to_the_same_pixel():
     y = int(shifted[0][1]) + 1
     x = int(shifted[0][0]) + 1
     assert cropped[y, x] == 255
+
+
+def test_frame_containment_wins_over_stride_alignment_at_full_frame():
+    # frame_h=720 is not a multiple of 32, so these two constraints cannot both
+    # hold. Containment must win: a band outside the frame would crash the crop.
+    band = roi.band_from_extent(y_min=0.0, y_max=719.0, frame_h=720, margin=48, multiple_of=32)
+    assert band.bottom <= 720
+    assert band.height % 32 != 0  # documents the deliberate trade-off
+
+
+def test_apply_crop_preserves_pixels_for_colour_frames():
+    frame = np.arange(720 * 1280 * 3, dtype=np.uint8).reshape(720, 1280, 3)
+    band = roi.CropBand(top=100, height=64)
+    out = roi.apply_crop(frame, band)
+    assert np.array_equal(out, frame[100:164])

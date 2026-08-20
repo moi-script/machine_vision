@@ -37,9 +37,10 @@ def band_from_extent(
 ) -> CropBand:
     """Smallest band covering [y_min, y_max] plus margin, snapped for the network.
 
-    Height is rounded UP to a multiple of `multiple_of` (YOLO strides), then the
-    band is clamped inside the frame. Clamping can only shrink height, never push
-    the band outside the image.
+    Height is rounded UP to a multiple of `multiple_of` (YOLO strides). However,
+    frame containment takes priority: if alignment would push the band outside the
+    frame, the band is clamped to fit. Near-full-frame extents may return a height
+    that is not aligned. Callers must treat alignment as best-effort.
     """
     lo = int(np.floor(y_min - margin))
     hi = int(np.ceil(y_max + margin))

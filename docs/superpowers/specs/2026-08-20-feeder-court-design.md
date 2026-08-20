@@ -103,6 +103,33 @@ Chosen by the user at that point, not pre-committed here:
 - Scope shuttle tracking to the near half-court only
 - Re-record with a cleaned lens and corrected exposure
 
+### 4.4 Measured result
+
+**Run on 2026-08-21. Gate decision: `p2`. Proceed as specified.**
+
+53 hand-drawn boxes, exported from the Roboflow project `feeder-court-calibration` and measured with `sample_calibration.py --mode measure` against 1280×720 frames:
+
+| clip | n | p25 | median | p75 | p95 |
+|---|---|---|---|---|---|
+| `near` | 11 | 16.0 px | 17.0 px | 19.5 px | 30.3 px |
+| `mid` | 30 | 11.9 px | 13.8 px | 17.0 px | 23.1 px |
+| `far` | 12 | 14.2 px | 16.5 px | 18.0 px | 18.9 px |
+
+The worst clip is `mid` at a 13.8 px median, which lands in the 8–16 px band of §4.1. `yolov8n-p2` stands as specified; no substitution to stock `yolov8n` in the training task.
+
+**§4.2's red flag is resolved, and the automated probe was wrong.** Hand-boxing does not reproduce the identical `near`/`far` distribution the probe reported, and every clip measures roughly twice the probe's 8 px median. The probe was measuring noise and court-line edges, as suspected. Nothing here is near the ~6 px kill threshold, so the §4.3 fallbacks are not invoked.
+
+`far` is **not** the smallest distance — `mid` is, by 2.7 px of median. The clip names describe player position, not shuttle-to-camera distance, which is the second half of the §4.2 hypothesis and is now confirmed. Two consequences: holding out `far` tests distance generalisation less sharply than §3 assumes, and any later decision to narrow the deployment envelope cannot simply drop the farthest-named clip.
+
+**Caveats on this measurement, recorded because they bound how much it proves:**
+
+- The labelled set is not the sampled set. Of the 60 evenly-spaced frames written by `--mode sample`, only 18 appear in the export; 42 were dropped and 35 different frame indices were labelled instead. The even-spacing guarantee of `evenly_spaced_frames` therefore does not hold for the measured set.
+- Several labelled frames are consecutive (`mid_000204/206/208`, `far_001658/1659/1660`), so some boxes are repeat views of one flight rather than independent samples. The effective sample is smaller than n=53.
+- `near` (n=11) and `far` (n=12) are thin. The decision has margin on both sides of both thresholds, so this does not change the verdict, but neither clip's percentile tail is well determined.
+- Every exported image carries exactly one box; none are empty. Frames with no visible shuttle were not exported, so this measurement says nothing about how often a shuttle is visible at all.
+
+Artifacts (gitignored, local only): sampled frames in `setup/datasets/feeder_court/calibration/`, the labelled export in `setup/datasets/feeder_court-calibration/`.
+
 ## 5. ROI crop
 
 The black ceiling is dead area — no shuttle ever appears there. Cropping the court band discards only dead pixels.

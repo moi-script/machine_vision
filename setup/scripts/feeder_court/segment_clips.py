@@ -12,6 +12,8 @@ import json
 import os
 import sys
 
+import cv2
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from utils.feeder_court import segments  # noqa: E402
@@ -27,6 +29,8 @@ def main() -> None:
     parser.add_argument("--sample-step", type=int, default=15)
     parser.add_argument("--threshold", type=float, default=15.0)
     parser.add_argument("--min-frames", type=int, default=150)
+    parser.add_argument("--head-trim", type=int, default=90)
+    parser.add_argument("--tail-trim", type=int, default=45)
     args = parser.parse_args()
 
     result = {}
@@ -37,6 +41,17 @@ def main() -> None:
             profile,
             sample_step=args.sample_step,
             threshold=args.threshold,
+            min_frames=args.min_frames,
+        )
+        # Clamp to recording bounds to remove junk from hand-placement
+        cap = cv2.VideoCapture(path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        spans = segments.clamp_to_recording_bounds(
+            spans,
+            total_frames=total_frames,
+            head_trim=args.head_trim,
+            tail_trim=args.tail_trim,
             min_frames=args.min_frames,
         )
         result[clip] = spans

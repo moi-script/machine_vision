@@ -53,3 +53,25 @@ def test_entirely_calm_profile_yields_one_full_span():
 def test_entirely_noisy_profile_yields_nothing():
     profile = np.full(50, 99.0)
     assert segments.usable_segments(profile, sample_step=15) == []
+
+
+def test_clamp_trims_the_recording_head_and_tail():
+    out = segments.clamp_to_recording_bounds([(0, 1000)], total_frames=1000, head_trim=90, tail_trim=45)
+    assert out == [(90, 955)]
+
+
+def test_clamp_drops_a_span_left_too_short_by_trimming():
+    # mid.mp4's junk (0, 180): after a 90-frame head trim only 90 frames remain.
+    out = segments.clamp_to_recording_bounds(
+        [(0, 180), (195, 1530)], total_frames=1664, head_trim=90, tail_trim=45, min_frames=150
+    )
+    assert out == [(195, 1530)]
+
+
+def test_clamp_leaves_an_interior_span_untouched():
+    out = segments.clamp_to_recording_bounds([(400, 900)], total_frames=2000, head_trim=90, tail_trim=45)
+    assert out == [(400, 900)]
+
+
+def test_clamp_can_drop_every_span():
+    assert segments.clamp_to_recording_bounds([(0, 50)], total_frames=100, head_trim=90, tail_trim=45) == []

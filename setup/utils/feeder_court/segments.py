@@ -73,3 +73,28 @@ def usable_segments(
         if end_frame - start_frame >= min_frames:
             out.append((start_frame, end_frame))
     return out
+
+
+def clamp_to_recording_bounds(
+    spans: list[tuple[int, int]],
+    total_frames: int,
+    head_trim: int = 90,
+    tail_trim: int = 45,
+    min_frames: int = 150,
+) -> list[tuple[int, int]]:
+    """Drop the start and end of the recording, where the rig is being handled.
+
+    Camera placement is slow and smooth, so it produces a LOW frame-to-frame
+    difference and reads as "calm" to usable_segments even though the framing is
+    wrong. Content-based framing checks were measured and do not separate the two
+    cases on this footage, so this guards by time instead: the first head_trim
+    and last tail_trim frames of a hand-started recording are never usable.
+    """
+    lo = head_trim
+    hi = total_frames - tail_trim
+    out = []
+    for a, b in spans:
+        a2, b2 = max(a, lo), min(b, hi)
+        if b2 - a2 >= min_frames:
+            out.append((a2, b2))
+    return out

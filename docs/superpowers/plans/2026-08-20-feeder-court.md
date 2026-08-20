@@ -594,6 +594,17 @@ def test_evenly_spaced_frames_is_sorted_and_within_bounds():
     assert frames == sorted(frames)
     assert frames[0] >= 50
     assert frames[-1] < 90
+
+
+def test_gate_refuses_to_decide_when_a_clip_is_unmeasured():
+    with pytest.raises(ValueError):
+        sizes.gate_decision({"near": 20.0})
+
+
+def test_gate_refuses_even_when_the_measured_clips_all_look_fine():
+    # The danger case: present clips look great, absent ones were never checked.
+    with pytest.raises(ValueError):
+        sizes.gate_decision({"near": 30.0, "mid": 25.0})
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -624,6 +635,7 @@ import numpy as np
 
 STOP_PX = 8.0     # below this everywhere -> the architecture cannot work
 STOCK_PX = 16.0   # at or above this everywhere -> no small-object head needed
+REQUIRED_CLIPS = ("near", "mid", "far")
 
 
 def yolo_box_max_dim_px(line: str, img_w: int, img_h: int) -> float:
@@ -647,6 +659,8 @@ def size_percentiles(dims: list[float]) -> dict[str, float]:
 def gate_decision(medians_by_clip: dict[str, float]) -> str:
     """Apply the spec's calibration gate.
 
+    Requires all three clips (near, mid, far) to be present.
+
     Returns "stop", "p2", or "stock".
 
     "stop" requires EVERY clip to be under 8 px. If one distance still works, the
@@ -656,9 +670,15 @@ def gate_decision(medians_by_clip: dict[str, float]) -> str:
     The choice between "stock" and "p2" is driven by the WORST clip, because the
     model has to handle every distance it will be deployed at.
     """
+    missing = [c for c in REQUIRED_CLIPS if c not in medians_by_clip]
+    if missing:
+        raise ValueError(
+            f"cannot decide the gate: no measurement for {missing}. "
+            "An unmeasured clip is not the same as a passing one - a clip with "
+            "zero hand-drawn boxes may be exactly the distance that forces a stop."
+        )
+
     medians = list(medians_by_clip.values())
-    if not medians:
-        raise ValueError("gate_decision requires at least one clip measurement")
 
     if all(m < STOP_PX for m in medians):
         return "stop"
@@ -754,6 +774,7 @@ def do_sample(args: argparse.Namespace) -> None:
 
 def do_measure(args: argparse.Namespace) -> None:
     medians = {}
+    unmeasured = []
     for clip in CLIPS:
         dims = []
         for path in sorted(glob.glob(os.path.join(args.labels, f"{clip}_*.txt"))):
@@ -764,6 +785,7 @@ def do_measure(args: argparse.Namespace) -> None:
                         dims.append(sizes.yolo_box_max_dim_px(line, args.img_w, args.img_h))
         if not dims:
             print(f"{clip}: NO BOXES FOUND — cannot measure this clip")
+            unmeasured.append(clip)
             continue
         stats = sizes.size_percentiles(dims)
         medians[clip] = stats["median"]
@@ -772,6 +794,15 @@ def do_measure(args: argparse.Namespace) -> None:
             f"median={stats['median']:.1f}  p75={stats['p75']:.1f}  p95={stats['p95']:.1f} px",
             flush=True,
         )
+
+    if unmeasured:
+        print(f"\nUNMEASURED CLIPS: {unmeasured}")
+        print("Refusing to decide the gate. A clip with no hand-drawn boxes is")
+        print("not evidence that the model will work there - it may be the very")
+        print("distance that makes this architecture unusable.")
+        print("Either box those frames, or decide deliberately that the distance")
+        print("is out of scope and re-run with only the clips you are scoping to.")
+        sys.exit(1)
 
     decision = sizes.gate_decision(medians)
     print(f"\nGATE DECISION: {decision}")
@@ -813,7 +844,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd setup && python -m pytest tests/test_feeder_court_sizes.py -v`
-Expected: PASS, 10 tests
+Expected: PASS, 12 tests
 
 - [ ] **Step 5: Commit the tooling**
 

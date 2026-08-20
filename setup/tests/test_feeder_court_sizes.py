@@ -59,3 +59,14 @@ def test_evenly_spaced_frames_is_sorted_and_within_bounds():
     assert frames == sorted(frames)
     assert frames[0] >= 50
     assert frames[-1] < 90
+
+
+def test_gate_refuses_to_decide_when_a_clip_is_unmeasured():
+    with pytest.raises(ValueError):
+        sizes.gate_decision({"near": 20.0})
+
+
+def test_gate_refuses_even_when_the_measured_clips_all_look_fine():
+    # The danger case: present clips look great, absent ones were never checked.
+    with pytest.raises(ValueError):
+        sizes.gate_decision({"near": 30.0, "mid": 25.0})

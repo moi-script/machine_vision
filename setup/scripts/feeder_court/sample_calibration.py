@@ -59,6 +59,7 @@ def do_sample(args: argparse.Namespace) -> None:
 
 def do_measure(args: argparse.Namespace) -> None:
     medians = {}
+    unmeasured = []
     for clip in CLIPS:
         dims = []
         for path in sorted(glob.glob(os.path.join(args.labels, f"{clip}_*.txt"))):
@@ -69,6 +70,7 @@ def do_measure(args: argparse.Namespace) -> None:
                         dims.append(sizes.yolo_box_max_dim_px(line, args.img_w, args.img_h))
         if not dims:
             print(f"{clip}: NO BOXES FOUND — cannot measure this clip")
+            unmeasured.append(clip)
             continue
         stats = sizes.size_percentiles(dims)
         medians[clip] = stats["median"]
@@ -77,6 +79,15 @@ def do_measure(args: argparse.Namespace) -> None:
             f"median={stats['median']:.1f}  p75={stats['p75']:.1f}  p95={stats['p95']:.1f} px",
             flush=True,
         )
+
+    if unmeasured:
+        print(f"\nUNMEASURED CLIPS: {unmeasured}")
+        print("Refusing to decide the gate. A clip with no hand-drawn boxes is")
+        print("not evidence that the model will work there - it may be the very")
+        print("distance that makes this architecture unusable.")
+        print("Either box those frames, or decide deliberately that the distance")
+        print("is out of scope and re-run with only the clips you are scoping to.")
+        sys.exit(1)
 
     decision = sizes.gate_decision(medians)
     print(f"\nGATE DECISION: {decision}")

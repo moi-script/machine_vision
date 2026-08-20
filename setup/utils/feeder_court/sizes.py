@@ -16,6 +16,7 @@ import numpy as np
 
 STOP_PX = 8.0     # below this everywhere -> the architecture cannot work
 STOCK_PX = 16.0   # at or above this everywhere -> no small-object head needed
+REQUIRED_CLIPS = ("near", "mid", "far")
 
 
 def yolo_box_max_dim_px(line: str, img_w: int, img_h: int) -> float:
@@ -39,6 +40,8 @@ def size_percentiles(dims: list[float]) -> dict[str, float]:
 def gate_decision(medians_by_clip: dict[str, float]) -> str:
     """Apply the spec's calibration gate.
 
+    Requires all three clips (near, mid, far) to be present.
+
     Returns "stop", "p2", or "stock".
 
     "stop" requires EVERY clip to be under 8 px. If one distance still works, the
@@ -48,9 +51,15 @@ def gate_decision(medians_by_clip: dict[str, float]) -> str:
     The choice between "stock" and "p2" is driven by the WORST clip, because the
     model has to handle every distance it will be deployed at.
     """
+    missing = [c for c in REQUIRED_CLIPS if c not in medians_by_clip]
+    if missing:
+        raise ValueError(
+            f"cannot decide the gate: no measurement for {missing}. "
+            "An unmeasured clip is not the same as a passing one - a clip with "
+            "zero hand-drawn boxes may be exactly the distance that forces a stop."
+        )
+
     medians = list(medians_by_clip.values())
-    if not medians:
-        raise ValueError("gate_decision requires at least one clip measurement")
 
     if all(m < STOP_PX for m in medians):
         return "stop"

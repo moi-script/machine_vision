@@ -78,7 +78,7 @@ The spec calls a train/infer crop mismatch a silent correctness bug, so this is 
   - `shift_boxes_into_band(boxes_xyxy: np.ndarray, band: CropBand) -> np.ndarray`
   - `boxes_fully_inside(boxes_xyxy: np.ndarray, band: CropBand) -> np.ndarray` (bool mask)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `setup/tests/test_feeder_court_roi.py`:
 
@@ -154,12 +154,12 @@ def test_crop_then_shift_round_trips_to_the_same_pixel():
     assert cropped[y, x] == 255
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd setup && python -m pytest tests/test_feeder_court_roi.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'utils.feeder_court'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `setup/utils/feeder_court/__init__.py` as an empty file.
 
@@ -250,12 +250,12 @@ def boxes_fully_inside(boxes_xyxy: np.ndarray, band: CropBand) -> np.ndarray:
     return (b[:, 1] >= band.top) & (b[:, 3] <= band.bottom)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd setup && python -m pytest tests/test_feeder_court_roi.py -v`
 Expected: PASS, 7 tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add setup/utils/feeder_court/__init__.py setup/utils/feeder_court/roi.py setup/tests/test_feeder_court_roi.py
@@ -279,7 +279,7 @@ Every clip has camera-motion junk at head and tail — `near.mp4` ends on a clos
   - `usable_segments(profile: np.ndarray, sample_step: int, threshold: float = 15.0, min_frames: int = 150) -> list[tuple[int, int]]`
   - `motion_profile(video_path: str, sample_step: int = 15, size: tuple[int, int] = (160, 90)) -> np.ndarray`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `setup/tests/test_feeder_court_segments.py`:
 
@@ -341,12 +341,12 @@ def test_entirely_noisy_profile_yields_nothing():
     assert segments.usable_segments(profile, sample_step=15) == []
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd setup && python -m pytest tests/test_feeder_court_segments.py -v`
 Expected: FAIL with `ImportError: cannot import name 'segments'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `setup/utils/feeder_court/segments.py`:
 
@@ -486,12 +486,12 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd setup && python -m pytest tests/test_feeder_court_segments.py -v`
 Expected: PASS, 5 tests
 
-- [ ] **Step 5: Run the CLI against the real clips**
+- [x] **Step 5: Run the CLI against the real clips**
 
 Run:
 ```bash
@@ -502,7 +502,7 @@ cd setup && python scripts/feeder_court/segment_clips.py \
 
 Expected: three lines of output. Sanity-check against the spec's §2.1 table — `near` ≈ 200–2100, `mid` ≈ 250–1480, `far` ≈ 200–1740, roughly 4,670 usable frames in total. If the totals are wildly different (say under 2,000 or over 7,000), tune `--threshold` before continuing; a wrong window here corrupts everything downstream.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add setup/utils/feeder_court/segments.py setup/scripts/feeder_court/segment_clips.py setup/tests/test_feeder_court_segments.py
@@ -528,7 +528,7 @@ This is the task that decides whether the rest of the plan runs at all. Do not s
   - `gate_decision(medians_by_clip: dict[str, float]) -> str` returning `"stock"`, `"p2"`, or `"stop"`
   - `evenly_spaced_frames(spans: list[tuple[int, int]], count: int) -> list[int]`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `setup/tests/test_feeder_court_sizes.py`:
 
@@ -622,12 +622,12 @@ def test_gate_boundary_exactly_sixteen_is_stock():
     assert sizes.gate_decision({"near": 16.0, "mid": 16.0, "far": 16.0}) == "stock"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd setup && python -m pytest tests/test_feeder_court_sizes.py -v`
 Expected: FAIL with `ImportError: cannot import name 'sizes'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `setup/utils/feeder_court/sizes.py`:
 
@@ -868,19 +868,19 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd setup && python -m pytest tests/test_feeder_court_sizes.py -v`
 Expected: PASS, 15 tests
 
-- [ ] **Step 5: Commit the tooling**
+- [x] **Step 5: Commit the tooling**
 
 ```bash
 git add setup/utils/feeder_court/sizes.py setup/scripts/feeder_court/sample_calibration.py setup/tests/test_feeder_court_sizes.py
 git commit -m "feat(feeder_court): Phase 0 calibration gate tooling"
 ```
 
-- [ ] **Step 6: Generate the calibration frames**
+- [x] **Step 6: Generate the calibration frames**
 
 Run:
 ```bash
@@ -891,13 +891,13 @@ cd setup && python scripts/feeder_court/sample_calibration.py --mode sample \
 ```
 Expected: 60 JPEGs in `datasets/feeder_court/calibration/`.
 
-- [ ] **Step 7: HUMAN TASK — hand-box the calibration frames**
+- [x] **Step 7: HUMAN TASK — hand-box the calibration frames**
 
 Upload the 60 frames to a Roboflow project named `feeder-court-calibration`. Box **every visible shuttlecock**, including ones you are only fairly confident about — but not ones you are guessing at. Export as YOLOv8 and place the label `.txt` files in `datasets/feeder_court/calibration/labels/`.
 
 This is roughly 20 minutes of work and it is the cheapest possible way to find out whether the rest of this plan is viable.
 
-- [ ] **Step 8: Run the gate**
+- [x] **Step 8: Run the gate**
 
 Run:
 ```bash
@@ -909,7 +909,7 @@ cd setup && python scripts/feeder_court/sample_calibration.py --mode measure \
 
 If it prints `p2`, continue with the plan as written. If it prints `stock`, continue but substitute `yolov8n.yaml` for `yolov8-p2.yaml` in Task 8 and note the change.
 
-- [ ] **Step 9: Record the result**
+- [x] **Step 9: Record the result**
 
 Append the measured table and the gate decision to the spec under a new "§4.4 Measured result" heading, then commit:
 

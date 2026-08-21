@@ -1425,7 +1425,7 @@ git commit -m "feat(feeder_court): track linking and flight classification"
   and contact sheets at `datasets/feeder_court/proposals/sheet_<clip>_<n>.jpg`.
   The crop band is NOT stored here — Task 7's derive_band() is its single source.
 
-- [ ] **Step 1: Write the script**
+- [x] **Step 1: Write the script**
 
 Create `setup/scripts/feeder_court/propose_shuttles.py`:
 
@@ -1574,7 +1574,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: Run it against the real clips**
+- [x] **Step 2: Run it against the real clips**
 
 Run:
 ```bash
@@ -1590,7 +1590,7 @@ Expected: three summary lines and three contact sheets. Sanity checks — candid
 
 Open `datasets/feeder_court/proposals/sheet_*.jpg`. Judge roughly what fraction of tiles are real shuttlecocks. If it is under about 30%, tighten `--thresh` or the `is_flight` thresholds and re-run before spending labelling effort on them.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add setup/scripts/feeder_court/propose_shuttles.py

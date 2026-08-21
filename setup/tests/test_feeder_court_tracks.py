@@ -34,7 +34,10 @@ def test_link_tolerates_a_short_gap():
 
 
 def test_is_flight_accepts_a_fast_directed_track():
-    track = [_c(i, 100 + 12 * i, 50 + 5 * i) for i in range(12)]
+    # 14 points, 13 px per step -> span 169 px. The old 12-point version spanned
+    # 143 px, under the measured min_span of 150, and a real flight crosses far
+    # more of the frame than that anyway.
+    track = [_c(i, 100 + 12 * i, 50 + 5 * i) for i in range(14)]
     assert tracks.is_flight(track) is True
 
 
@@ -52,6 +55,13 @@ def test_is_flight_rejects_jitter_that_goes_nowhere():
     # Fast per-step motion but returns to where it started.
     xs = [100, 130, 100, 130, 100, 130, 100, 130]
     track = [_c(i, x, 50) for i, x in enumerate(xs)]
+    assert tracks.is_flight(track) is False
+
+
+def test_is_flight_rejects_a_long_indirect_zigzag():
+    # Clears min_span and min_step, so only min_directness can reject it. The
+    # jitter test above is caught by span first and never reaches this branch.
+    track = [_c(i, 100 + 15 * i, 50 + (60 if i % 2 else 0)) for i in range(12)]
     assert tracks.is_flight(track) is False
 
 

@@ -86,7 +86,11 @@ def main() -> None:
     parser.add_argument("--source", required=True)
     parser.add_argument("--segments", required=True)
     parser.add_argument("--out", required=True)
-    parser.add_argument("--thresh", type=int, default=22)
+    parser.add_argument("--thresh", type=int, default=28)
+    parser.add_argument("--min-span", type=float, default=150.0)
+    parser.add_argument("--min-step", type=float, default=12.0)
+    parser.add_argument("--min-directness", type=float, default=0.5)
+    parser.add_argument("--max-len", type=int, default=60)
     args = parser.parse_args()
 
     with open(args.segments) as fh:
@@ -110,7 +114,16 @@ def main() -> None:
         cap.release()
 
         linked = tracks.link_tracks(all_cands)
-        flights = [t for t in linked if tracks.is_flight(t)]
+        flights = [
+            t for t in linked
+            if tracks.is_flight(
+                t,
+                max_len=args.max_len,
+                min_step=args.min_step,
+                min_span=args.min_span,
+                min_directness=args.min_directness,
+            )
+        ]
 
         flight_frames = {c.frame for t in flights for c in t}
         reject_frames = {c.frame for c in all_cands} - flight_frames
@@ -122,8 +135,10 @@ def main() -> None:
                 boxes.setdefault(str(c.frame), []).append([c.x, c.y, c.w, c.h])
 
         counts = {b: sum(1 for v in buckets.values() if v == b) for b in ("positive", "negative", "discard")}
+        secs = len(all_frames) / 30.2
         print(
-            f"{clip}: {len(all_cands)} candidates -> {len(linked)} tracks -> {len(flights)} flights | "
+            f"{clip}: {len(all_cands)} candidates ({len(all_cands)/max(len(all_frames),1):.1f}/frame) -> "
+            f"{len(linked)} tracks -> {len(flights)} flights ({len(flights)/secs:.2f}/s) | "
             f"positive {counts['positive']}  negative {counts['negative']}  discard {counts['discard']}",
             flush=True,
         )
@@ -136,8 +151,10 @@ def main() -> None:
         # is not a sample a human can judge the proposals from.
         picks = [(c.frame, c.x, c.y, c.w, c.h) for t in flights for c in [t[len(t) // 2]]]
         picks.sort(key=lambda p: p[0])
-        step = max(1, len(picks) // 24)
-        picks = picks[::step][:24]
+        if len(picks) > 24:
+            # linspace, not slicing: with ~36 flights a stride of len//24 == 1
+            # and the sheet silently falls back to the first 24.
+            picks = [picks[i] for i in np.linspace(0, len(picks) - 1, 24).astype(int)]
         contact_sheet(video, picks, os.path.join(args.out, f"sheet_{clip}_flights.jpg"))
 
     print(f"\nwrote proposals to {args.out}")

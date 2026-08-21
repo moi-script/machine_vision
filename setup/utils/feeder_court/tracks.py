@@ -2,8 +2,19 @@
 # tracks.py — Turn noisy per-frame candidates into shuttle flights.
 #
 # A shuttlecock flight is 15-40 frames, moves fast, and goes roughly where its
-# velocity says it will. Court-line artifacts produced tracks 100-738 frames
-# long; that length cap alone removes most of them.
+# velocity says it will.
+#
+# Defaults come from a sweep against 53 hand-boxed frames. min_span 150 +
+# min_step 12 + min_directness 0.5 gives 0.61 flights/s at 90.6% ground-truth
+# recall, against 2.91/s at 94.3% for the untuned values -- a 4.8x cut in false
+# flights for 3.7 points of recall.
+#
+# min_span is the effective lever. max_len is NOT: an earlier note claimed
+# court-line artifacts run 100-738 frames so "that length cap alone removes most
+# of them", but on this footage max_len 30 costs 24.5 points of recall
+# (94.3 -> 69.8%) while cutting the rate only 2.91 -> 2.65/s. Real shuttle
+# tracks are long; the artifacts are not separated by length. Leave max_len
+# loose and tighten span instead.
 #
 # bucket_frames implements the three-way positive/negative/discard split. The
 # discard bucket is the important one: a frame that produced a candidate we
@@ -76,9 +87,9 @@ def is_flight(
     track: list[Candidate],
     min_len: int = 5,
     max_len: int = 60,
-    min_step: float = 6.0,
-    min_span: float = 60.0,
-    min_directness: float = 0.45,
+    min_step: float = 12.0,
+    min_span: float = 150.0,
+    min_directness: float = 0.5,
 ) -> bool:
     """Whether a track looks like a shuttlecock in flight."""
     if not (min_len <= len(track) <= max_len):

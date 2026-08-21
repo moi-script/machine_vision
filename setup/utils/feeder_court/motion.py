@@ -9,7 +9,13 @@
 # This instead aligns t-K and t+K onto t by phase correlation and takes the
 # MINIMUM of the two differences: a pixel must differ from BOTH neighbours to
 # survive. Static structure cancels, and so do the lens smudge blobs, which are
-# fixed in image coordinates. Measured: 6.0 candidates/frame.
+# fixed in image coordinates.
+#
+# thresh defaults to 28, not 22, from a sweep against 53 hand-boxed frames:
+# 28 gives 100% recall at 11.4 candidates/frame, where 22 gives 98.1% at
+# 17.4. It is better on BOTH axes. Recall collapses past 34 (77% at 40).
+# Measured on the real clips at 28: 8.2 (near) / 7.4 (mid) / 5.2 (far)
+# candidates per frame.
 # ============================================================
 
 from __future__ import annotations
@@ -60,7 +66,7 @@ def three_frame_diff(prev: np.ndarray, cur: np.ndarray, nxt: np.ndarray) -> np.n
 def candidate_boxes(
     diff: np.ndarray,
     frame_index: int,
-    thresh: int = 22,
+    thresh: int = 28,
     min_dim: int = 3,
     max_dim: int = 45,
     min_area: int = 5,

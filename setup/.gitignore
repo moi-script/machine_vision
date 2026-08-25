@@ -2,10 +2,14 @@
 .env
 *.env
 
-# Model weights (never commit large weight files)
+# Model weights: stray/downloaded weights stay out, models/ is tracked via Git LFS
 *.pt
-models/*.pt
-models/*.onnx
+*.onnx
+!models/*.pt
+!models/*.onnx
+
+# OpenVINO exports (regenerate from the .pt weights with export_openvino)
+*_openvino_model/
 
 # Roboflow dataset exports + local training runs (large, reproducible from Roboflow)
 datasets/

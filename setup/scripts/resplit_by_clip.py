@@ -45,12 +45,12 @@ def clip_of(filename: str) -> str:
     return _FRAME_RE.sub("", stem) or stem
 
 
-def collect():
+def collect(root: str):
     """-> {clip: [(split, image_path, label_path_or_None)]}"""
     groups = collections.defaultdict(list)
     for sp in SPLITS:
-        idir = os.path.join(ROOT, sp, "images")
-        ldir = os.path.join(ROOT, sp, "labels")
+        idir = os.path.join(root, sp, "images")
+        ldir = os.path.join(root, sp, "labels")
         if not os.path.isdir(idir):
             continue
         for fn in os.listdir(idir):
@@ -66,16 +66,19 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--root", default=ROOT,
+                    help="dataset directory to re-split (default datasets/shuttle-v2)")
     args = ap.parse_args()
+    root = args.root
 
-    if not os.path.isdir(ROOT):
-        print(f"[ERROR] {ROOT} not found — run fetch_shuttle_v2.py first",
+    if not os.path.isdir(root):
+        print(f"[ERROR] {root} not found — run fetch_shuttle_v2.py first",
               file=sys.stderr)
         return 1
 
-    groups = collect()
+    groups = collect(root)
     if not groups:
-        print(f"[ERROR] no images under {ROOT}", file=sys.stderr)
+        print(f"[ERROR] no images under {root}", file=sys.stderr)
         return 1
 
     total = sum(len(v) for v in groups.values())
@@ -120,7 +123,7 @@ def main() -> int:
             for src, sub in ((ip, "images"), (lp, "labels")):
                 if not src:
                     continue
-                out = os.path.join(ROOT, dst, sub, os.path.basename(src))
+                out = os.path.join(root, dst, sub, os.path.basename(src))
                 os.makedirs(os.path.dirname(out), exist_ok=True)
                 shutil.move(src, out)
             moved += 1
@@ -128,8 +131,8 @@ def main() -> int:
     # Ultralytics caches the old split in *.cache — stale caches silently
     # reintroduce the original assignment on the next run.
     for sp in SPLITS:
-        for cache in (os.path.join(ROOT, sp, "labels.cache"),
-                      os.path.join(ROOT, sp, "images.cache")):
+        for cache in (os.path.join(root, sp, "labels.cache"),
+                      os.path.join(root, sp, "images.cache")):
             if os.path.isfile(cache):
                 os.remove(cache)
 

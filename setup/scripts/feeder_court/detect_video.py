@@ -1,6 +1,6 @@
 # ============================================================
 # detect_video.py — Run the feeder_court shuttlecock detector over a video and
-# burn the boxes into an annotated copy.
+# burn the boxes into an annotated copy, optionally watching it live.
 #
 # The weights come from the Colab run (yolov8-p2 head, trained at imgsz 1280),
 # so inference defaults to 1280 too: dropping to 640 halves the shuttle to
@@ -9,12 +9,15 @@
 # Usage:
 #   python scripts/feeder_court/detect_video.py                 # near, mid, far rally spans
 #   python scripts/feeder_court/detect_video.py --clips far --full --conf 0.15
+#   python scripts/feeder_court/detect_video.py --show --videos <path>/*.mp4
+#
+# Window keys (--show):  q / ESC  quit          SPACE  pause
 # ============================================================
 
 import argparse
+import glob
 import json
 import os
-import sys
 import time
 
 import cv2
@@ -26,6 +29,7 @@ CLIPS = ["near", "mid", "far"]
 
 BOX_COLOR = (0, 255, 255)
 HUD_COLOR = (255, 255, 255)
+WINDOW = "feeder_court detect"
 
 # Every hand-drawn shuttle box in feeder_court_yolo is between 8 and 40 px on a
 # side. The model happily emits 500 px boxes over the ceiling lights on mid.mp4,
@@ -33,28 +37,58 @@ HUD_COLOR = (255, 255, 255)
 MAX_SIDE_PX = 60
 
 
-def span_for(clip: str, segments: dict, total: int, full: bool) -> tuple[int, int]:
+def load_model(YOLO, weights: str, backend: str, imgsz: int):
+    """Load weights, exporting to OpenVINO on first use for that imgsz.
+
+    OpenVINO bakes the input size into the compiled model, so each imgsz needs
+    its own export directory — reusing a 640 export at 1280 silently runs at
+    640. Measured ~7x faster than PyTorch on this i3-1215U, which is the
+    difference between watching a clip and waiting for it. Same directory
+    naming as live_detect.py, so the two scripts share one export.
+    """
+    if backend == "torch":
+        return YOLO(weights)
+
+    stem = os.path.splitext(weights)[0]
+    ov_dir = f"{stem}_{imgsz}_openvino_model"
+    if not os.path.isdir(ov_dir):
+        print(f"[EXPORT] building OpenVINO model for imgsz={imgsz} (one time, ~1 min)...")
+        produced = YOLO(weights).export(format="openvino", imgsz=imgsz, half=False)
+        os.rename(str(produced), ov_dir)
+        print(f"[EXPORT] {ov_dir}")
+    return YOLO(ov_dir, task="detect")
+
+
+def span_for(label: str, segments: dict, total: int, full: bool) -> tuple[int, int]:
     """Rally span from segments.json, or the whole clip when --full."""
-    if full or clip not in segments or not segments[clip]:
+    if full or label not in segments or not segments[label]:
         return 0, total
-    starts = [s for s, _ in segments[clip]]
-    ends = [e for _, e in segments[clip]]
+    starts = [s for s, _ in segments[label]]
+    ends = [e for _, e in segments[label]]
     return max(min(starts), 0), min(max(ends), total)
 
 
-def draw(frame, boxes, frame_idx: int, clip: str) -> None:
+def draw(frame, boxes, frame_idx: int, label: str, min_marker: int = 26) -> None:
     for x1, y1, x2, y2, conf in boxes:
-        # The shuttle is a few pixels wide; an inflated box keeps it visible.
-        pad = max(6 - (x2 - x1) // 2, 0)
-        cv2.rectangle(frame, (x1 - pad, y1 - pad), (x2 + pad, y2 + pad), BOX_COLOR, 2)
-        cv2.putText(frame, f"{conf:.2f}", (x1 - pad, max(y1 - pad - 5, 12)),
+        cv2.rectangle(frame, (x1, y1), (x2, y2), BOX_COLOR, 2)
+
+        # A shuttle at court distance is ~20 px wide; a rectangle that small is
+        # invisible on screen, which makes a working model look broken.
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+        if (x2 - x1) < min_marker or (y2 - y1) < min_marker:
+            half = min_marker // 2
+            cv2.rectangle(frame, (cx - half, cy - half), (cx + half, cy + half),
+                          BOX_COLOR, 1)
+            cv2.line(frame, (cx - half - 6, cy), (cx - half, cy), BOX_COLOR, 1)
+            cv2.line(frame, (cx + half, cy), (cx + half + 6, cy), BOX_COLOR, 1)
+
+        cv2.putText(frame, f"{conf:.2f}", (x1, max(y1 - 6, 14)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, BOX_COLOR, 1, cv2.LINE_AA)
-    hud = f"{clip}  f{frame_idx}  det={len(boxes)}"
+    hud = f"{label}  f{frame_idx}  det={len(boxes)}"
     cv2.putText(frame, hud, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, HUD_COLOR, 2, cv2.LINE_AA)
 
 
-def run_clip(model, clip: str, args, segments: dict) -> dict:
-    video_path = os.path.join(args.source, f"{clip}.mp4")
+def run_video(model, video_path: str, label: str, args, segments: dict) -> dict:
     if not os.path.exists(video_path):
         raise SystemExit(f"missing video: {video_path}")
 
@@ -63,15 +97,19 @@ def run_clip(model, clip: str, args, segments: dict) -> dict:
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    start, end = span_for(clip, segments, total, args.full)
+    start, end = span_for(label, segments, total, args.full)
 
-    os.makedirs(args.out, exist_ok=True)
-    out_path = os.path.join(args.out, f"{clip}_boxed.mp4")
-    writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+    writer = None
+    out_path = None
+    if not args.no_save:
+        os.makedirs(args.out, exist_ok=True)
+        out_path = os.path.join(args.out, f"{label}_boxed.mp4")
+        writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, start)
     frames = hits = dets = oversized = 0
     conf_sum = 0.0
+    quit_early = False
     t0 = time.perf_counter()
 
     for frame_idx in range(start, end):
@@ -94,18 +132,38 @@ def run_clip(model, clip: str, args, segments: dict) -> dict:
         hits += 1 if boxes else 0
         frames += 1
 
-        draw(frame, boxes, frame_idx, clip)
-        writer.write(frame)
+        draw(frame, boxes, frame_idx, label)
+        if writer is not None:
+            writer.write(frame)
+
+        if args.show:
+            cv2.imshow(WINDOW, frame)
+            # Every frame is scored, so the window advances at inference speed
+            # rather than at the clip's fps — this shows what the model sees,
+            # not a real-time playback of it.
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
+                quit_early = True
+                break
+            if key == ord(" "):
+                while True:
+                    k2 = cv2.waitKey(50) & 0xFF
+                    if k2 in (ord(" "), ord("q"), 27):
+                        quit_early = k2 in (ord("q"), 27)
+                        break
+                if quit_early:
+                    break
 
         if frames % 100 == 0:
-            print(f"  {clip}: {frames}/{end - start} frames, {dets} detections", flush=True)
+            print(f"  {label}: {frames}/{end - start} frames, {dets} detections", flush=True)
 
     elapsed = time.perf_counter() - t0
     cap.release()
-    writer.release()
+    if writer is not None:
+        writer.release()
 
     return {
-        "clip": clip,
+        "clip": label,
         "out": out_path,
         "span": (start, end),
         "frames": frames,
@@ -114,22 +172,30 @@ def run_clip(model, clip: str, args, segments: dict) -> dict:
         "oversized_dropped": oversized,
         "mean_conf": conf_sum / dets if dets else 0.0,
         "ms_per_frame": 1000 * elapsed / frames if frames else 0.0,
+        "quit_early": quit_early,
     }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Box shuttlecocks in the feeder_court source videos.")
+    parser = argparse.ArgumentParser(description="Box shuttlecocks in badminton source videos.")
     parser.add_argument("--weights", default=DEFAULT_WEIGHTS)
     parser.add_argument("--source", default=DEFAULT_SOURCE)
     parser.add_argument("--segments", default=DEFAULT_SEGMENTS)
     parser.add_argument("--out", default="runs/feeder_court/detect")
     parser.add_argument("--clips", nargs="+", default=CLIPS, choices=CLIPS)
+    parser.add_argument("--videos", nargs="+", default=None,
+                        help="explicit video paths or globs; overrides --source/--clips")
     parser.add_argument("--imgsz", type=int, default=1280)
     parser.add_argument("--conf", type=float, default=0.25)
     parser.add_argument("--iou", type=float, default=0.5)
     parser.add_argument("--max-det", type=int, default=20, dest="max_det")
     parser.add_argument("--max-side", type=int, default=MAX_SIDE_PX, dest="max_side",
                         help="drop boxes whose longest side exceeds this (px); 0 disables")
+    parser.add_argument("--backend", choices=["torch", "openvino"], default="openvino",
+                        help="openvino is ~7x faster on this CPU and numerically equivalent")
+    parser.add_argument("--show", action="store_true", help="live window with the boxes drawn")
+    parser.add_argument("--no-save", action="store_true", dest="no_save",
+                        help="skip writing the annotated mp4 (pair with --show)")
     parser.add_argument("--full", action="store_true", help="ignore segments.json, process the whole clip")
     args = parser.parse_args()
 
@@ -139,24 +205,46 @@ def main() -> None:
     if not os.path.exists(args.weights):
         raise SystemExit(f"missing weights: {args.weights}")
 
+    if args.videos:
+        paths = []
+        for pattern in args.videos:
+            # PowerShell does not expand globs the way a POSIX shell does, so
+            # expand here too and fall through for literal paths.
+            matched = sorted(glob.glob(pattern))
+            paths.extend(matched or [pattern])
+    else:
+        paths = [os.path.join(args.source, f"{clip}.mp4") for clip in args.clips]
+    if not paths:
+        raise SystemExit("no videos matched")
+
     segments = {}
     if os.path.exists(args.segments):
         with open(args.segments) as fh:
             segments = json.load(fh)
 
     from ultralytics import YOLO  # imported late so --help stays instant
-    model = YOLO(args.weights)
-    print(f"loaded {args.weights}  classes={model.names}  imgsz={args.imgsz}  conf={args.conf}\n")
+    model = load_model(YOLO, args.weights, args.backend, args.imgsz)
+    print(f"loaded {args.weights} [{args.backend}]  imgsz={args.imgsz}  conf={args.conf}\n")
 
-    rows = [run_clip(model, clip, args, segments) for clip in args.clips]
+    rows = []
+    for path in paths:
+        label = os.path.splitext(os.path.basename(path))[0]
+        rows.append(run_video(model, path, label, args, segments))
+        if rows[-1]["quit_early"]:
+            print("quit requested - stopping")
+            break
 
-    print("\nclip   span            frames  hit%   dets  oversized  mean_conf  ms/frame")
+    if args.show:
+        cv2.destroyAllWindows()
+
+    print("\nclip             span            frames  hit%   dets  oversized  mean_conf  ms/frame")
     for r in rows:
         hit = 100 * r["frames_with_det"] / r["frames"] if r["frames"] else 0
-        print(f'{r["clip"]:<6} {str(r["span"]):<15} {r["frames"]:<7} {hit:5.1f}  {r["detections"]:<5} '
+        print(f'{r["clip"]:<16} {str(r["span"]):<15} {r["frames"]:<7} {hit:5.1f}  {r["detections"]:<5} '
               f'{r["oversized_dropped"]:<9} {r["mean_conf"]:9.3f}  {r["ms_per_frame"]:8.1f}')
     for r in rows:
-        print(f'  -> {r["out"]}')
+        if r["out"]:
+            print(f'  -> {r["out"]}')
 
 
 if __name__ == "__main__":

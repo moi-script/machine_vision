@@ -1,24 +1,30 @@
-"""One worker thread per camera slot: read, detect, annotate, publish a JPEG.
+"""One worker per camera slot: capture, detect, annotate, publish a JPEG.
 
-WHY A WORKER RATHER THAN DETECTING ON REQUEST
-Two cameras must run at once now and four eventually, and inference is the
-expensive part. A worker per slot lets each camera advance at whatever rate its
-model allows while the browser pulls the newest frame whenever it likes, so a
-slow camera cannot stall a fast one or the page.
+WHY CAPTURE AND INFERENCE RUN ON SEPARATE THREADS
+Locked together, the display can never be faster than the model: the flying
+shuttle at imgsz 1280 costs ~106 ms, so the feed was stuck at ~9 fps alone and
+~1.2 fps with two cameras competing. Split, the capture thread publishes every
+frame at the source's own rate while the inference thread works on the newest
+frame it can get and overwrites its result when done. Display rate becomes the
+video rate; the model rate only decides how stale the boxes are, which the HUD
+reports as `age`. This is the same design live_detect.py uses for the camera.
 
-THE SPEED BUDGET IS REAL
-Measured on this i3-1215U, per frame: flying-shuttle p2 at imgsz 1280 costs
-~106 ms, landed-shuttle ~84 ms, pose cropped to the court with OpenVINO ~30 ms.
-Two cameras on shuttle models is therefore ~5 fps each, not 30. `infer_every`
-exists for that: run the model on every Nth frame and keep drawing the last
-boxes in between, which holds the displayed frame rate up. Players barely move
-between frames, so this costs almost nothing for pose; a smashed shuttle moves
-a long way, so raising it there loses real detections.
+WHY OPENVINO, AND WHY A CROP
+Measured on this i3-1215U:
+    pose   torch full frame 1280   172 ms   3.5 people/frame
+    pose   torch full frame  640    83 ms   1.6   <- downscaling loses people
+    pose   openvino + court crop    30 ms   1.9   <- same pixels, third the area
+    shuttle torch  1280            320 ms
+    shuttle openvino 1280          106 ms
+Downscaling the whole frame destroys small-object detection - a 128 px player
+becomes 64 px and the detector stops finding them. Cropping keeps them at native
+scale and throws away only ceiling and spectators, which is also why it fixes
+"too many people": the extras were spectators and adjacent courts.
 
-MODELS ARE LOADED PER WORKER, NOT SHARED
+WHY MODELS ARE PER WORKER
 Ultralytics predict is not documented as thread-safe, and a shared model behind
-two threads is the kind of bug that shows up as occasional wrong boxes rather
-than as a crash. Memory is cheap enough here: these are 3-6 MB nets.
+two threads fails as occasional wrong boxes rather than as a crash. These nets
+are 3-6 MB.
 """
 from __future__ import annotations
 
@@ -30,7 +36,10 @@ import cv2
 
 from app import sources
 
-# model key -> (weights, imgsz, task)
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# model key -> config. `crop` is a fraction of the frame (x1,y1,x2,y2) rather
+# than pixels, so one setting survives a change of camera resolution.
 MODELS: dict[str, dict] = {
     "none": {},
     "shuttle": {
@@ -46,11 +55,15 @@ MODELS: dict[str, dict] = {
     "pose": {
         "weights": "yolov8n-pose.pt",
         "imgsz": 640, "task": "pose", "conf": 0.25,
+        # Lower-middle of the frame: the near court. Excludes the ceiling and
+        # the spectator tables along the top, which is where the extra people
+        # were coming from.
+        "crop": (0.10, 0.35, 0.92, 1.00),
+        "top_n": 2,              # a singles rally; raise to 4 for doubles
         "label": "player pose",
     },
 }
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BOX_COLOR = (0, 255, 255)
 HUD_COLOR = (255, 255, 255)
 
@@ -70,84 +83,193 @@ def model_catalog() -> list[dict]:
     return out
 
 
-class Worker(threading.Thread):
-    """Reads one slot, annotates, and keeps only the newest JPEG."""
+def _load(weights: str, imgsz: int, task: str, backend: str):
+    """Load, exporting to OpenVINO on first use for that imgsz.
+
+    OpenVINO bakes the input size in, so each imgsz needs its own export
+    directory - reusing a 640 export at 1280 silently runs at 640.
+    """
+    from ultralytics import YOLO
+    path = _resolve(weights)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"weights missing: {weights}")
+    if backend == "torch":
+        return YOLO(path)
+    ov_dir = f"{os.path.splitext(path)[0]}_{imgsz}_openvino_model"
+    if not os.path.isdir(ov_dir):
+        produced = YOLO(path).export(format="openvino", imgsz=imgsz, half=False)
+        os.rename(str(produced), ov_dir)
+    return YOLO(ov_dir, task=task)
+
+
+class Worker:
+    """Capture thread + inference thread + the newest annotated JPEG."""
 
     def __init__(self, camera_id: str, model_key: str = "none",
-                 infer_every: int = 1, target_fps: float = 15.0):
-        super().__init__(daemon=True, name=f"cam-{camera_id}")
+                 backend: str = "openvino", target_fps: float = 30.0,
+                 top_n: int | None = None):
         self.camera_id = camera_id
         self.model_key = model_key
-        self.infer_every = max(1, int(infer_every))
+        self.backend = backend
         self.target_fps = target_fps
+        self.cfg = dict(MODELS.get(model_key) or {})
+        if top_n is not None:
+            self.cfg["top_n"] = top_n
+
         self._stop = threading.Event()
         self._lock = threading.Lock()
+        self._frame = None            # newest raw frame, for the inference thread
+        self._frame_at = 0.0
+        self._result = None           # (boxes, keypoints_result, produced_at)
         self._jpeg: bytes | None = None
-        self._stats = {"frames": 0, "detections": 0, "ms": 0.0,
-                       "fps": 0.0, "error": None}
+        self._stats = {"frames": 0, "detections": 0, "fps": 0.0,
+                       "infer_fps": 0.0, "infer_ms": 0.0, "age_ms": 0.0,
+                       "error": None, "loading": True}
+        self._threads: list[threading.Thread] = []
 
     # ── lifecycle ────────────────────────────────────────────
+    def start(self):
+        self._threads = [
+            threading.Thread(target=self._capture_loop, daemon=True,
+                             name=f"cap-{self.camera_id}"),
+            threading.Thread(target=self._infer_loop, daemon=True,
+                             name=f"inf-{self.camera_id}"),
+        ]
+        for t in self._threads:
+            t.start()
+
     def stop(self):
         self._stop.set()
+        for t in self._threads:
+            t.join(timeout=3.0)
+
+    @property
+    def alive(self) -> bool:
+        return any(t.is_alive() for t in self._threads)
 
     @property
     def stats(self) -> dict:
         with self._lock:
             return dict(self._stats, camera_id=self.camera_id,
-                        model=self.model_key, running=self.is_alive())
+                        model=self.model_key, backend=self.backend,
+                        running=self.alive)
 
     def latest_jpeg(self) -> bytes | None:
         with self._lock:
             return self._jpeg
 
-    # ── internals ────────────────────────────────────────────
-    def _load_model(self):
-        cfg = MODELS.get(self.model_key) or {}
-        if not cfg:
-            return None, {}
-        path = _resolve(cfg["weights"])
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"weights missing: {cfg['weights']}")
-        from ultralytics import YOLO  # imported late so the API starts fast
-        return YOLO(path), cfg
+    # ── crop helpers ─────────────────────────────────────────
+    def _crop_box(self, w: int, h: int):
+        c = self.cfg.get("crop")
+        if not c:
+            return None
+        return (int(c[0] * w), int(c[1] * h), int(c[2] * w), int(c[3] * h))
 
-    def _annotate(self, frame, result, cfg):
-        """Draw and count. Pose gets ultralytics' skeleton; detect gets boxes."""
-        if result is None:
-            return frame, 0
-        if cfg.get("task") == "pose":
-            return result.plot(), len(result.boxes)
-
-        n = 0
-        max_side = cfg.get("max_side")
-        for box in result.boxes:
-            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
-            if max_side and max(x2 - x1, y2 - y1) > max_side:
-                continue  # the large-box false positives, same filter as the CLI
-            n += 1
-            cv2.rectangle(frame, (x1, y1), (x2, y2), BOX_COLOR, 2)
-            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-            if (x2 - x1) < 26 or (y2 - y1) < 26:
-                # A 13 px box is invisible on screen, which makes a working
-                # model look broken.
-                cv2.rectangle(frame, (cx - 13, cy - 13), (cx + 13, cy + 13),
-                              BOX_COLOR, 1)
-            cv2.putText(frame, f"{float(box.conf[0]):.2f}", (x1, max(y1 - 6, 14)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, BOX_COLOR, 1, cv2.LINE_AA)
-        return frame, n
-
-    def run(self):
+    # ── inference thread ─────────────────────────────────────
+    def _infer_loop(self):
+        if self.model_key == "none":
+            with self._lock:
+                self._stats["loading"] = False
+            return
         try:
-            model, cfg = self._load_model()
+            model = _load(self.cfg["weights"], self.cfg["imgsz"],
+                          self.cfg.get("task", "detect"), self.backend)
         except Exception as exc:
             with self._lock:
                 self._stats["error"] = str(exc)
+                self._stats["loading"] = False
             return
+        with self._lock:
+            self._stats["loading"] = False
 
+        window: list[float] = []
+        while not self._stop.is_set():
+            with self._lock:
+                frame = None if self._frame is None else self._frame.copy()
+            if frame is None:
+                time.sleep(0.01)
+                continue
+
+            t0 = time.perf_counter()
+            box = self._crop_box(frame.shape[1], frame.shape[0])
+            src = frame[box[1]:box[3], box[0]:box[2]] if box else frame
+            try:
+                res = model.predict(src, imgsz=self.cfg["imgsz"],
+                                    conf=self.cfg.get("conf", 0.25),
+                                    classes=[0] if self.cfg.get("task") == "pose" else None,
+                                    verbose=False)[0]
+            except Exception as exc:
+                with self._lock:
+                    self._stats["error"] = str(exc)
+                return
+            ms = (time.perf_counter() - t0) * 1000.0
+            window.append(ms)
+            if len(window) > 20:
+                window.pop(0)
+
+            with self._lock:
+                self._result = (res, box, time.perf_counter())
+                self._stats["infer_ms"] = round(ms, 1)
+                self._stats["infer_fps"] = round(1000.0 / (sum(window) / len(window)), 1)
+
+    # ── capture thread ───────────────────────────────────────
+    def _draw(self, frame, res, box):
+        """Draw the last inference onto the current frame."""
+        if res is None:
+            return 0
+        ox, oy = (box[0], box[1]) if box else (0, 0)
+
+        order = sorted(range(len(res.boxes)),
+                       key=lambda i: -float((res.boxes.xyxy[i][2] - res.boxes.xyxy[i][0]) *
+                                            (res.boxes.xyxy[i][3] - res.boxes.xyxy[i][1])))
+        top_n = self.cfg.get("top_n")
+        if top_n:
+            order = order[:top_n]
+
+        if self.cfg.get("task") == "pose":
+            # Skeleton lines from COCO's 17-keypoint topology.
+            links = [(5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (5, 11), (6, 12),
+                     (11, 12), (11, 13), (13, 15), (12, 14), (14, 16)]
+            kp = res.keypoints
+            for i in order:
+                x1, y1, x2, y2 = (int(v) for v in res.boxes.xyxy[i].tolist())
+                cv2.rectangle(frame, (x1 + ox, y1 + oy), (x2 + ox, y2 + oy), (255, 128, 0), 2)
+                if kp is None:
+                    continue
+                pts = kp.xy[i].tolist()
+                cf = kp.conf[i].tolist() if kp.conf is not None else [1.0] * len(pts)
+                for a, b in links:
+                    if a < len(pts) and b < len(pts) and cf[a] > 0.3 and cf[b] > 0.3:
+                        cv2.line(frame, (int(pts[a][0]) + ox, int(pts[a][1]) + oy),
+                                 (int(pts[b][0]) + ox, int(pts[b][1]) + oy), (0, 255, 120), 2)
+                for (px, py), c in zip(pts, cf):
+                    if c > 0.3:
+                        cv2.circle(frame, (int(px) + ox, int(py) + oy), 3, (0, 220, 255), -1)
+            return len(order)
+
+        n = 0
+        max_side = self.cfg.get("max_side")
+        for i in order:
+            x1, y1, x2, y2 = (int(v) for v in res.boxes.xyxy[i].tolist())
+            if max_side and max(x2 - x1, y2 - y1) > max_side:
+                continue
+            n += 1
+            cv2.rectangle(frame, (x1 + ox, y1 + oy), (x2 + ox, y2 + oy), BOX_COLOR, 2)
+            cx, cy = (x1 + x2) // 2 + ox, (y1 + y2) // 2 + oy
+            if (x2 - x1) < 26 or (y2 - y1) < 26:
+                # A 13 px box is invisible on screen; the marker keeps a working
+                # model from looking broken.
+                cv2.rectangle(frame, (cx - 13, cy - 13), (cx + 13, cy + 13), BOX_COLOR, 1)
+            cv2.putText(frame, f"{float(res.boxes.conf[i]):.2f}",
+                        (x1 + ox, max(y1 + oy - 6, 14)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, BOX_COLOR, 1, cv2.LINE_AA)
+        return n
+
+    def _capture_loop(self):
         cap = None
-        result = None
-        frame_no = 0
-        window = []
+        frames = 0
+        last_started: float | None = None
+        window: list[float] = []
         min_dt = 1.0 / self.target_fps if self.target_fps else 0.0
 
         try:
@@ -167,43 +289,56 @@ class Worker(threading.Thread):
 
                 ok, frame = cap.read()
                 if not ok:
-                    # A file ran out: loop it, so a demo source keeps playing.
                     if sources.is_file(self.camera_id):
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)   # loop demo footage
                         continue
                     with self._lock:
                         self._stats["error"] = "capture returned no frame"
                     return
 
-                if model is not None and frame_no % self.infer_every == 0:
-                    result = model.predict(frame, imgsz=cfg["imgsz"],
-                                           conf=cfg.get("conf", 0.25),
-                                           verbose=False)[0]
-                view, n = self._annotate(frame, result, cfg)
+                with self._lock:
+                    self._frame = frame          # hand the newest to inference
+                    self._frame_at = started
+                    res = self._result
 
-                frame_no += 1
-                dt = time.perf_counter() - started
-                window.append(dt)
-                if len(window) > 30:
-                    window.pop(0)
+                view = frame.copy()
+                age_ms = 0.0
+                n = 0
+                if res is not None:
+                    n = self._draw(view, res[0], res[1])
+                    age_ms = (time.perf_counter() - res[2]) * 1000.0
+
+                box = self._crop_box(view.shape[1], view.shape[0])
+                if box:
+                    cv2.rectangle(view, (box[0], box[1]), (box[2], box[3]), (90, 90, 90), 1)
+
+                frames += 1
+                # Measured across the WHOLE cycle including the pacing sleep
+                # below, via the previous iteration's start. Timing only the
+                # work reports the rate the loop could run at, not the rate it
+                # actually publishes, which overstated this by 4x.
+                if last_started is not None:
+                    window.append(started - last_started)
+                    if len(window) > 30:
+                        window.pop(0)
+                last_started = started
                 fps = len(window) / sum(window) if sum(window) else 0.0
 
-                cv2.putText(view, f"{self.camera_id}  {cfg.get('label','raw')}  "
-                                  f"{fps:4.1f} fps  det={n}",
-                            (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                            HUD_COLOR, 2, cv2.LINE_AA)
+                with self._lock:
+                    infer_ms = self._stats["infer_ms"]
+                cv2.putText(view,
+                            f"{self.camera_id}  {self.cfg.get('label','raw')}  "
+                            f"{fps:4.1f} fps  det={n}  age={age_ms:.0f}ms  inf={infer_ms:.0f}ms",
+                            (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.62, HUD_COLOR, 2, cv2.LINE_AA)
 
-                ok_enc, buf = cv2.imencode(".jpg", view,
-                                           [cv2.IMWRITE_JPEG_QUALITY, 72])
+                ok_enc, buf = cv2.imencode(".jpg", view, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 if ok_enc:
                     with self._lock:
                         self._jpeg = buf.tobytes()
-                        self._stats.update(frames=frame_no, detections=n,
-                                           ms=round(dt * 1000, 1),
-                                           fps=round(fps, 1), error=None)
+                        self._stats.update(frames=frames, detections=n,
+                                           fps=round(fps, 1),
+                                           age_ms=round(age_ms, 1), error=None)
 
-                # Never outrun the target: a file source would otherwise burn
-                # CPU racing through frames nobody is looking at.
                 slack = min_dt - (time.perf_counter() - started)
                 if slack > 0:
                     time.sleep(slack)
@@ -216,18 +351,18 @@ _workers: dict[str, Worker] = {}
 _wlock = threading.Lock()
 
 
-def start(camera_id: str, model_key: str = "none", infer_every: int = 1,
-          target_fps: float = 15.0) -> dict:
+def start(camera_id: str, model_key: str = "none", backend: str = "openvino",
+          target_fps: float = 30.0, top_n: int | None = None) -> dict:
     if model_key not in MODELS:
         raise ValueError(f"unknown model {model_key!r}")
     stop(camera_id)
-    w = Worker(camera_id, model_key, infer_every, target_fps)
+    w = Worker(camera_id, model_key, backend, target_fps, top_n)
     with _wlock:
         _workers[camera_id] = w
     w.start()
-    # Give the worker a moment so an immediate status call reports a real error
-    # (missing weights, dead device) rather than an empty "starting".
-    time.sleep(0.4)
+    # Long enough to surface an immediate failure (missing weights, dead device)
+    # but not long enough to block the request on a first-time OpenVINO export.
+    time.sleep(0.5)
     return w.stats
 
 
@@ -236,7 +371,6 @@ def stop(camera_id: str) -> None:
         w = _workers.pop(camera_id, None)
     if w:
         w.stop()
-        w.join(timeout=3.0)
 
 
 def stop_all() -> None:

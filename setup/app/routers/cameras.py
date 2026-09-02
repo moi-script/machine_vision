@@ -12,7 +12,8 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app import db, pipeline, sources, virtual_camera as vcam
-from app.calibration import CORNER_LABELS, CalibrationError, reproject, solve
+from app.calibration import (CORNER_LABELS, CalibrationError, fit_lines,
+                             line_overlay, reproject, solve)
 from utils import zones
 
 router = APIRouter(tags=["cameras"])
@@ -52,6 +53,7 @@ def list_cameras():
             "camera_id": cid,
             "source_available": present.get(cid, False),
             "calibrated": bool(doc),
+            "mode": (doc or {}).get("mode", "corners" if doc else None),
             "reprojection_error_px": (doc or {}).get("reprojection_error_px"),
             "calibrated_at": (doc or {}).get("calibrated_at"),
             "health": "ok" if doc else "uncalibrated",
@@ -160,6 +162,65 @@ def delete_calibration(camera_id: str):
     return {"camera_id": camera_id, "calibrated": False}
 
 
+class LineStroke(BaseModel):
+    role: str                      # "inside" | "outside"
+    points: list[list[float]]
+
+
+class LinesBody(BaseModel):
+    frame_id: str | None = None
+    strokes: list[LineStroke]
+    operator: str | None = None
+    note: str | None = None
+
+
+@router.post("/api/cameras/{camera_id}/calibration/lines/preview")
+def preview_lines(camera_id: str, body: LinesBody):
+    """Fit the traced lines without saving, and return them for the overlay."""
+    if camera_id not in vcam.CAMERA_IDS:
+        raise HTTPException(404, f"unknown camera {camera_id!r}")
+    try:
+        fits = fit_lines([s.model_dump() for s in body.strokes])
+    except CalibrationError as exc:
+        return {"ok": False, "errors": exc.errors}
+    frozen = vcam.frozen(camera_id)
+    w = frozen["image"].shape[1] if frozen else 1280
+    return {"ok": True, "fits": fits, "overlay": line_overlay(fits, w),
+            "residual_px": {r: f["residual_px"] for r, f in fits.items()}}
+
+
+@router.post("/api/cameras/{camera_id}/calibration/lines")
+def commit_lines(camera_id: str, body: LinesBody):
+    """Persist a two-line band calibration for a side or back camera."""
+    if camera_id not in vcam.CAMERA_IDS:
+        raise HTTPException(404, f"unknown camera {camera_id!r}")
+    try:
+        fits = fit_lines([s.model_dump() for s in body.strokes])
+    except CalibrationError as exc:
+        raise HTTPException(422, {"errors": exc.errors})
+
+    frozen = vcam.frozen(camera_id)
+    size = ([frozen["image"].shape[1], frozen["image"].shape[0]]
+            if frozen else [1280, 720])
+    doc = {
+        "_id": camera_id,
+        "camera_id": camera_id,
+        "mode": "lines",
+        "lines": fits,
+        "strokes": [s.model_dump() for s in body.strokes],
+        "image_size": size,
+        "reference_frame_id": body.frame_id or (frozen or {}).get("frame_id"),
+        "operator": body.operator,
+        "note": body.note,
+        "calibrated_at": _now(),
+        "schema_version": 2,
+    }
+    db.calibrations().update_one({"_id": camera_id}, {"$set": doc}, upsert=True)
+    db.calibrations().insert_one({**doc, "_id": f"{camera_id}:{doc['calibrated_at']}",
+                                  "history": True})
+    return doc
+
+
 # -- sources: files and capture devices ----------------------
 
 class SourceBody(BaseModel):
@@ -230,8 +291,9 @@ def set_source(camera_id: str, body: SourceBody):
 
 class StartBody(BaseModel):
     model: str = "none"
-    infer_every: int = 1
-    target_fps: float = 15.0
+    backend: str = "openvino"
+    target_fps: float = 30.0
+    top_n: int | None = None
 
 
 @router.get("/api/models")
@@ -244,7 +306,8 @@ def start_camera(camera_id: str, body: StartBody):
     if camera_id not in sources.CAMERA_IDS:
         raise HTTPException(404, f"unknown camera {camera_id!r}")
     try:
-        return pipeline.start(camera_id, body.model, body.infer_every, body.target_fps)
+        return pipeline.start(camera_id, body.model, body.backend,
+                              body.target_fps, body.top_n)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 

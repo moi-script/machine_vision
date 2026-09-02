@@ -70,8 +70,14 @@ def grab(camera_id: str, frame_index: int | None = None):
         # A live device reports no frame count and cannot seek; just take the
         # next frame it offers.
         seekable = total > 0
-        idx = 0 if (frame_index is None or not seekable) else max(
-            0, min(frame_index, max(total - 1, 0)))
+        if frame_index is None:
+            # A quarter in, not frame 0. Recordings routinely start with the
+            # lens covered or the rig being carried into position — lines.mp4's
+            # first ~130 frames measure a Laplacian variance of 4 against a
+            # median of 1300, i.e. unusable for clicking court lines on.
+            idx = total // 4 if seekable else 0
+        else:
+            idx = max(0, min(frame_index, max(total - 1, 0))) if seekable else 0
         if idx and seekable:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ok, frame = cap.read()

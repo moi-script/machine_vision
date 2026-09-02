@@ -144,3 +144,75 @@ def reproject(H_inv, singles: bool = False) -> dict[str, list]:
         px = cv2.perspectiveTransform(arr, H_inv).reshape(-1, 2)
         out[name] = [[round(float(x), 1), round(float(y), 1)] for x, y in px]
     return out
+
+
+# ── Line-band calibration, for the side and back cameras ────
+#
+# The front camera sees four court corners, so it gets a homography. A camera
+# looking down a sideline does not: measured on lines.mp4, every visible court
+# line sits inside ~110 px of a 720 px frame, and four points squeezed into that
+# band give a homography that is numerically valid and useless in the near-far
+# direction. What those views CAN answer is which side of a line the shuttle
+# landed, so they are calibrated by tracing two lines instead - the inside line
+# and the outside line - and a landing between them is IN.
+#
+# Strokes are fitted rather than used as polylines: a court line is straight, so
+# least squares through every traced point averages out hand jitter, and
+# retracing the same line twice makes the fit better rather than ambiguous.
+
+LINE_ROLES = ("inside", "outside")
+
+
+def fit_lines(strokes: list[dict]) -> dict[str, dict]:
+    """[{role, points:[[x,y],...]}] -> {role: {a, b, n}} for y = a*x + b."""
+    pooled: dict[str, list] = {}
+    for s in strokes:
+        role = s.get("role")
+        pts = s.get("points") or []
+        if role not in LINE_ROLES or len(pts) < 2:
+            continue
+        pooled.setdefault(role, []).extend(pts)
+
+    fits: dict[str, dict] = {}
+    errors: list[str] = []
+    for role, pts in pooled.items():
+        arr = np.asarray(pts, dtype=float)
+        if np.ptp(arr[:, 0]) < 20:
+            errors.append(f"the {role} line is too steep or too short to fit")
+            continue
+        a, b = np.polyfit(arr[:, 0], arr[:, 1], 1)
+        resid = float(np.mean(np.abs(arr[:, 1] - (a * arr[:, 0] + b))))
+        fits[role] = {"a": float(a), "b": float(b), "n": len(arr),
+                      "residual_px": round(resid, 2)}
+
+    missing = [r for r in LINE_ROLES if r not in fits]
+    if missing:
+        errors.append(f"missing traced line(s): {', '.join(missing)}")
+    if errors:
+        raise CalibrationError(errors)
+
+    # Two lines that cross inside the frame are not a band; almost always the
+    # two roles were traced onto the same court line.
+    a1, b1 = fits["inside"]["a"], fits["inside"]["b"]
+    a2, b2 = fits["outside"]["a"], fits["outside"]["b"]
+    if abs(a1 - a2) > 1e-9:
+        x_cross = (b2 - b1) / (a1 - a2)
+        if 0 <= x_cross <= 1280:
+            raise CalibrationError([
+                "the two lines cross inside the frame - they are probably "
+                "tracing the same court line"])
+    return fits
+
+
+def band_call(fits: dict[str, dict], point) -> str:
+    """IN when a landing sits between the two fitted lines."""
+    x, y = point
+    ys = sorted(f["a"] * x + f["b"] for f in fits.values())
+    return "IN" if ys[0] <= y <= ys[-1] else "OUT"
+
+
+def line_overlay(fits: dict[str, dict], width: int = 1280) -> dict[str, list]:
+    """Each fitted line as two endpoints, for drawing across the frame."""
+    return {role: [[0.0, round(f["b"], 1)],
+                   [float(width - 1), round(f["a"] * (width - 1) + f["b"], 1)]]
+            for role, f in fits.items()}

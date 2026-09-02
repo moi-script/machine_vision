@@ -86,13 +86,16 @@ def test_unknown_camera_is_404():
 
 
 def test_preview_returns_overlay_without_saving():
-    r = client.post("/api/cameras/front/calibration/preview",
-                    json={"corners": GOOD})
+    # These tests share the real database, so a camera calibrated by hand
+    # through the web page would otherwise make this fail. Clear the slot
+    # first and assert against a known-empty state rather than assuming one.
+    client.delete("/api/cameras/back/calibration")
+    r = client.post("/api/cameras/back/calibration/preview", json={"corners": GOOD})
     body = r.json()
     assert body["ok"] is True
     assert "outline" in body["overlay"]
     # Preview must not persist: the camera is still uncalibrated afterwards.
-    assert client.get("/api/cameras/front/calibration").status_code == 404
+    assert client.get("/api/cameras/back/calibration").status_code == 404
 
 
 def test_preview_reports_errors_instead_of_raising():

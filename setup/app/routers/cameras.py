@@ -7,15 +7,19 @@ from __future__ import annotations
 
 import datetime as _dt
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from app import db, virtual_camera as vcam
+from app import db, pipeline, sources, virtual_camera as vcam
 from app.calibration import CORNER_LABELS, CalibrationError, reproject, solve
 from utils import zones
 
 router = APIRouter(tags=["cameras"])
+
+# MJPEG part separators, built here so no escape survives a source rewrite.
+BOUNDARY = b"--frame" + bytes([13, 10]) + b"Content-Type: image/jpeg" + bytes([13, 10, 13, 10])
+TAIL = bytes([13, 10])
 
 
 def _now() -> str:
@@ -154,6 +158,144 @@ def delete_calibration(camera_id: str):
     db.calibrations().delete_one({"_id": camera_id})
     zones.clear_homography(camera_id)
     return {"camera_id": camera_id, "calibrated": False}
+
+
+# -- sources: files and capture devices ----------------------
+
+class SourceBody(BaseModel):
+    kind: str                      # "file" | "device"
+    path: str | None = None
+    index: int | None = None
+    label: str | None = None
+
+
+@router.get("/api/sources")
+def list_sources():
+    """Everything a slot could be pointed at, for the source picker."""
+    return {"bundled": sources.list_bundled(),
+            "uploads": sources.list_uploads(),
+            "current": {cid: sources.describe(cid) for cid in sources.CAMERA_IDS}}
+
+
+@router.get("/api/devices")
+def list_devices(max_index: int = 4):
+    """Probe capture indices. Slow, so the UI asks for it explicitly."""
+    return sources.list_devices(max_index)
+
+
+@router.post("/api/uploads")
+async def upload_video(file: UploadFile = File(...)):
+    """Accept a video from the user's machine and make it selectable."""
+    import os as _os
+    if not file.filename or not file.filename.lower().endswith(
+            (".mp4", ".avi", ".mov", ".mkv")):
+        raise HTTPException(400, "expected a .mp4/.avi/.mov/.mkv video")
+    _os.makedirs(sources.UPLOAD_DIR, exist_ok=True)
+    safe = _os.path.basename(file.filename).replace("..", "_")
+    dest = _os.path.join(sources.UPLOAD_DIR, safe)
+    with open(dest, "wb") as fh:
+        while chunk := await file.read(1 << 20):
+            fh.write(chunk)
+
+    # Reject anything OpenCV cannot decode now, rather than at stream time.
+    import cv2 as _cv2
+    cap = _cv2.VideoCapture(dest)
+    ok = cap.isOpened() and cap.read()[0]
+    frames = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT)) if ok else 0
+    w = int(cap.get(_cv2.CAP_PROP_FRAME_WIDTH)) if ok else 0
+    h = int(cap.get(_cv2.CAP_PROP_FRAME_HEIGHT)) if ok else 0
+    cap.release()
+    if not ok:
+        _os.remove(dest)
+        raise HTTPException(400, "could not decode that video")
+    return {"name": safe, "path": _os.path.abspath(dest), "frames": frames,
+            "width": w, "height": h,
+            "size_mb": round(_os.path.getsize(dest) / 1e6, 1)}
+
+
+@router.post("/api/cameras/{camera_id}/source")
+def set_source(camera_id: str, body: SourceBody):
+    if camera_id not in sources.CAMERA_IDS:
+        raise HTTPException(404, f"unknown camera {camera_id!r}")
+    try:
+        sources.set_source(camera_id, body.kind, body.path, body.index, body.label)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    # A slot pointed somewhere new must be re-read, not left showing the old feed.
+    pipeline.stop(camera_id)
+    return sources.describe(camera_id)
+
+
+# -- live pipeline -------------------------------------------
+
+class StartBody(BaseModel):
+    model: str = "none"
+    infer_every: int = 1
+    target_fps: float = 15.0
+
+
+@router.get("/api/models")
+def list_models():
+    return pipeline.model_catalog()
+
+
+@router.post("/api/cameras/{camera_id}/start")
+def start_camera(camera_id: str, body: StartBody):
+    if camera_id not in sources.CAMERA_IDS:
+        raise HTTPException(404, f"unknown camera {camera_id!r}")
+    try:
+        return pipeline.start(camera_id, body.model, body.infer_every, body.target_fps)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.post("/api/cameras/{camera_id}/stop")
+def stop_camera(camera_id: str):
+    pipeline.stop(camera_id)
+    return {"camera_id": camera_id, "running": False}
+
+
+@router.get("/api/pipeline")
+def pipeline_status():
+    return pipeline.all_stats()
+
+
+@router.get("/api/cameras/{camera_id}/stream")
+def stream(camera_id: str):
+    """MJPEG. Works in a plain <img> tag, so the page needs no player."""
+    worker = pipeline.get(camera_id)
+    if worker is None:
+        raise HTTPException(409, f"{camera_id} is not running - start it first")
+
+    def frames():
+        import time as _t
+        blank = 0
+        while True:
+            w = pipeline.get(camera_id)
+            if w is None:
+                return
+            jpg = w.latest_jpeg()
+            if jpg is None:
+                blank += 1
+                if blank > 200:      # ~10 s of nothing: the worker is dead
+                    return
+                _t.sleep(0.05)
+                continue
+            blank = 0
+            yield (BOUNDARY + jpg + TAIL)
+            _t.sleep(0.03)
+
+    return StreamingResponse(
+        frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+@router.get("/live", response_class=HTMLResponse, include_in_schema=False)
+def live_page():
+    import os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "static", "live.html")
+    with open(path, encoding="utf-8") as fh:
+        return HTMLResponse(fh.read())
 
 
 @router.get("/calibration", response_class=HTMLResponse, include_in_schema=False)

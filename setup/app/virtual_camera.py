@@ -46,15 +46,16 @@ def source_path(camera_id: str) -> str:
 
 
 def available() -> dict[str, bool]:
-    return {cid: os.path.exists(source_path(cid)) for cid in CAMERA_IDS}
+    from app import sources
+    return {cid: sources.describe(cid).get("available", False) for cid in CAMERA_IDS}
 
 
 def _open(camera_id: str):
-    """The one seam a real camera replaces."""
-    path = source_path(camera_id)
-    if not os.path.exists(path):
-        raise FileNotFoundError(path)
-    return cv2.VideoCapture(path)
+    """Delegates to the source registry so calibration and the live pipeline
+    always read the same thing. A slot pointed at a USB camera is calibrated
+    against that camera, not against the bundled stand-in it replaced."""
+    from app import sources
+    return sources.open_capture(camera_id)
 
 
 def grab(camera_id: str, frame_index: int | None = None):
@@ -66,8 +67,12 @@ def grab(camera_id: str, frame_index: int | None = None):
     cap = _open(camera_id)
     try:
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        idx = 0 if frame_index is None else max(0, min(frame_index, max(total - 1, 0)))
-        if idx:
+        # A live device reports no frame count and cannot seek; just take the
+        # next frame it offers.
+        seekable = total > 0
+        idx = 0 if (frame_index is None or not seekable) else max(
+            0, min(frame_index, max(total - 1, 0)))
+        if idx and seekable:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ok, frame = cap.read()
         if not ok:
@@ -90,7 +95,7 @@ def frozen(camera_id: str) -> dict | None:
 def frame_count(camera_id: str) -> int:
     cap = _open(camera_id)
     try:
-        return int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        return max(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), 0)
     finally:
         cap.release()
 

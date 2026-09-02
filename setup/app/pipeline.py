@@ -33,8 +33,10 @@ import threading
 import time
 
 import cv2
+import numpy as np
 
 from app import sources
+from app.landings import LandingCounter
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -116,6 +118,13 @@ class Worker:
         if top_n is not None:
             self.cfg["top_n"] = top_n
 
+        # Calibration is read once at start: it changes when an operator saves
+        # it, and restarting the worker is how that takes effect.
+        self.calib = _load_calibration(camera_id)
+        self.counter = (LandingCounter(self.calib["lines"])
+                        if model_key == "landed" and self.calib
+                        and self.calib.get("mode") == "lines" else None)
+
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._frame = None            # newest raw frame, for the inference thread
@@ -124,7 +133,9 @@ class Worker:
         self._jpeg: bytes | None = None
         self._stats = {"frames": 0, "detections": 0, "fps": 0.0,
                        "infer_fps": 0.0, "infer_ms": 0.0, "age_ms": 0.0,
-                       "error": None, "loading": True}
+                       "error": None, "loading": True,
+                       "calibrated": bool(self.calib),
+                       "landings": 0, "counts": {}, "last_call": None}
         self._threads: list[threading.Thread] = []
 
     # ── lifecycle ────────────────────────────────────────────
@@ -312,6 +323,19 @@ class Worker:
                 if box:
                     cv2.rectangle(view, (box[0], box[1]), (box[2], box[3]), (90, 90, 90), 1)
 
+                # The saved calibration, drawn on every frame so the operator can
+                # see what the in/out calls are being measured against.
+                _draw_calibration(view, self.calib)
+
+                if self.counter is not None and res is not None:
+                    fresh = self.counter.update(
+                        _landing_points(res[0], res[1], self.cfg.get("max_side")),
+                        frames)
+                    for ev in fresh:
+                        with self._lock:
+                            self._stats["last_call"] = ev
+                    _draw_counts(view, self.counter.counts)
+
                 frames += 1
                 # Measured across the WHOLE cycle including the pacing sleep
                 # below, via the previous iteration's start. Timing only the
@@ -338,6 +362,9 @@ class Worker:
                         self._stats.update(frames=frames, detections=n,
                                            fps=round(fps, 1),
                                            age_ms=round(age_ms, 1), error=None)
+                        if self.counter is not None:
+                            self._stats["landings"] = self.counter.total
+                            self._stats["counts"] = dict(self.counter.counts)
 
                 slack = min_dt - (time.perf_counter() - started)
                 if slack > 0:
@@ -345,6 +372,63 @@ class Worker:
         finally:
             if cap is not None:
                 cap.release()
+
+
+
+def _load_calibration(camera_id: str) -> dict | None:
+    """This camera's saved calibration, or None. Mongo being down is not fatal:
+    the feed is still worth watching without in/out calls."""
+    try:
+        from app import db
+        return db.calibrations().find_one({"_id": camera_id})
+    except Exception:
+        return None
+
+
+def _draw_calibration(frame, calib) -> None:
+    if not calib:
+        return
+    h, w = frame.shape[:2]
+    if calib.get("mode") == "lines":
+        colors = {"inside": (120, 196, 53), "outside": (59, 59, 255)}  # BGR
+        for role, fit in (calib.get("lines") or {}).items():
+            a, b = fit["a"], fit["b"]
+            cv2.line(frame, (0, int(b)), (w - 1, int(a * (w - 1) + b)),
+                     colors.get(role, (200, 200, 200)), 2, cv2.LINE_AA)
+            cv2.putText(frame, role, (8, max(int(b) - 6, 14)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        colors.get(role, (200, 200, 200)), 1, cv2.LINE_AA)
+    elif calib.get("corners"):
+        pts = np.asarray(calib["corners"], dtype=np.int32).reshape(-1, 1, 2)
+        cv2.polylines(frame, [pts], True, (0, 122, 255), 2, cv2.LINE_AA)
+
+
+def _landing_points(res, box, max_side):
+    """Bottom-centre of each surviving box, in full-frame coordinates.
+
+    Bottom-centre rather than the centroid: the centre floats half a shuttle
+    above the floor, which at this scale is centimetres of line-call error.
+    """
+    ox, oy = (box[0], box[1]) if box else (0, 0)
+    out = []
+    for i in range(len(res.boxes)):
+        x1, y1, x2, y2 = res.boxes.xyxy[i].tolist()
+        if max_side and max(x2 - x1, y2 - y1) > max_side:
+            continue
+        out.append(((x1 + x2) / 2.0 + ox, y2 + oy))
+    return out
+
+
+def _draw_counts(frame, counts) -> None:
+    rows = [("green in", counts.get("green_inside", 0), (120, 196, 53)),
+            ("green out", counts.get("green_outside", 0), (120, 196, 53)),
+            ("red in", counts.get("red_inside", 0), (59, 59, 255)),
+            ("red out", counts.get("red_outside", 0), (59, 59, 255))]
+    y = 56
+    for label, n, color in rows:
+        cv2.putText(frame, f"{label}: {n}", (10, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+        y += 24
 
 
 _workers: dict[str, Worker] = {}

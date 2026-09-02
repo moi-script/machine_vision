@@ -135,7 +135,8 @@ class Worker:
                        "infer_fps": 0.0, "infer_ms": 0.0, "age_ms": 0.0,
                        "error": None, "loading": True,
                        "calibrated": bool(self.calib),
-                       "landings": 0, "counts": {}, "last_call": None}
+                       "landings": 0, "counts": {}, "last_call": None,
+                       "active": None}
         self._threads: list[threading.Thread] = []
 
     # ── lifecycle ────────────────────────────────────────────
@@ -316,8 +317,17 @@ class Worker:
                 age_ms = 0.0
                 n = 0
                 if res is not None:
-                    n = self._draw(view, res[0], res[1])
                     age_ms = (time.perf_counter() - res[2]) * 1000.0
+                    if self.counter is not None:
+                        # Update first, then draw: the state of each shuttle
+                        # (active / counted / pending) is what gets drawn.
+                        pts = _landing_points(res[0], res[1], self.cfg.get("max_side"))
+                        for ev in self.counter.update(pts, frames):
+                            with self._lock:
+                                self._stats["last_call"] = ev
+                        n = _draw_landings(view, pts, self.counter)
+                    else:
+                        n = self._draw(view, res[0], res[1])
 
                 box = self._crop_box(view.shape[1], view.shape[0])
                 if box:
@@ -327,14 +337,8 @@ class Worker:
                 # see what the in/out calls are being measured against.
                 _draw_calibration(view, self.calib)
 
-                if self.counter is not None and res is not None:
-                    fresh = self.counter.update(
-                        _landing_points(res[0], res[1], self.cfg.get("max_side")),
-                        frames)
-                    for ev in fresh:
-                        with self._lock:
-                            self._stats["last_call"] = ev
-                    _draw_counts(view, self.counter.counts)
+                if self.counter is not None:
+                    _draw_counts(view, self.counter.counts, self.counter.active)
 
                 frames += 1
                 # Measured across the WHOLE cycle including the pacing sleep
@@ -365,6 +369,7 @@ class Worker:
                         if self.counter is not None:
                             self._stats["landings"] = self.counter.total
                             self._stats["counts"] = dict(self.counter.counts)
+                            self._stats["active"] = self.counter.active
 
                 slack = min_dt - (time.perf_counter() - started)
                 if slack > 0:
@@ -419,7 +424,45 @@ def _landing_points(res, box, max_side):
     return out
 
 
-def _draw_counts(frame, counts) -> None:
+ACTIVE_COLOR = (0, 255, 0)      # the shuttle that just landed
+COUNTED_COLOR = (110, 110, 110)  # already scored, out of contention
+PENDING_COLOR = (0, 200, 255)    # seen, not yet confirmed
+
+
+def _draw_landings(frame, points, counter) -> int:
+    """Draw every shuttle in its current state.
+
+    Only one is ever green. Counting shuttles per frame is meaningless once the
+    court fills up - by the end of lines.mp4 there are 5140 raw detections - so
+    what the display has to answer is which one just arrived, not how many are
+    lying there.
+    """
+    for p in points:
+        state = counter.state_of(p)
+        x, y = int(p[0]), int(p[1])
+        if state == "counted":
+            cv2.circle(frame, (x, y), 7, COUNTED_COLOR, 1, cv2.LINE_AA)
+        elif state == "pending":
+            cv2.circle(frame, (x, y), 10, PENDING_COLOR, 1, cv2.LINE_AA)
+        # "active" is drawn below from its stored position instead.
+
+    # The active marker is drawn from the registry, not from this frame's
+    # detections. The detector does not find every shuttle in every frame - it
+    # reported det=0 on plenty of them - and a highlight that blinks out
+    # whenever that happens is useless for judging a call.
+    a = counter.active
+    if not a:
+        return 0
+    x, y = int(a["px"][0]), int(a["px"][1])
+    cv2.circle(frame, (x, y), 20, ACTIVE_COLOR, 2, cv2.LINE_AA)
+    cv2.drawMarker(frame, (x, y), ACTIVE_COLOR, cv2.MARKER_CROSS, 26, 2)
+    call = "  ".join(f"{c}:{a[c]}" for c in ("green", "red") if c in a)
+    cv2.putText(frame, f"#{a.get('id','')}  {call}", (x + 26, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACTIVE_COLOR, 2, cv2.LINE_AA)
+    return 1
+
+
+def _draw_counts(frame, counts, active=None) -> None:
     rows = [("green in", counts.get("green_inside", 0), (120, 196, 53)),
             ("green out", counts.get("green_outside", 0), (120, 196, 53)),
             ("red in", counts.get("red_inside", 0), (59, 59, 255)),
@@ -429,6 +472,10 @@ def _draw_counts(frame, counts) -> None:
         cv2.putText(frame, f"{label}: {n}", (10, y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
         y += 24
+    if active:
+        call = "  ".join(f"{c}:{active[c]}" for c in ("green", "red") if c in active)
+        cv2.putText(frame, f"active #{active['id']}  {call}", (10, y + 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACTIVE_COLOR, 2, cv2.LINE_AA)
 
 
 _workers: dict[str, Worker] = {}

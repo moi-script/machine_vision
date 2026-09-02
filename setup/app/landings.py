@@ -43,6 +43,12 @@ class LandingCounter:
         self.total = 0
         self.counts = {"green_inside": 0, "green_outside": 0,
                        "red_inside": 0, "red_outside": 0}
+        # The shuttle that landed most recently. Exactly one is "active" at a
+        # time: when the next one lands it takes over and this one becomes just
+        # another retired position. That is what makes scoring readable once
+        # dozens of shuttles are lying on the court - the question is never
+        # "which of these 50" but "which one just arrived".
+        self.active: dict | None = None
 
     def _near(self, entries, point) -> bool:
         px, py = point
@@ -90,18 +96,37 @@ class LandingCounter:
                 sides = self.classify(point)
                 for colour, side in sides.items():
                     self.counts[f"{colour}_{side}"] += 1
-                confirmed.append({"id": self.total, "frame": frame_idx,
-                                  "px": [round(point[0], 1), round(point[1], 1)],
-                                  **sides})
+                event = {"id": self.total, "frame": frame_idx,
+                         "px": [round(point[0], 1), round(point[1], 1)],
+                         **sides}
+                # Hand over: the previous active shuttle is now just history.
+                self.active = event
+                confirmed.append(event)
 
         # A candidate that stopped being detected was noise, not a landing.
         self.pending = [c for c in self.pending
                         if frame_idx - c["last"] <= self.confirm_frames]
         return confirmed
 
+    def state_of(self, point) -> str:
+        """"active" | "counted" | "pending" — what to draw for this detection.
+
+        Checked active-first: the active shuttle is also in `retired`, since it
+        has been counted, and reporting it as merely counted would leave nothing
+        highlighted.
+        """
+        if self.active is not None:
+            ax, ay = self.active["px"]
+            if (ax - point[0]) ** 2 + (ay - point[1]) ** 2 <= self.match_radius ** 2:
+                return "active"
+        if self._near(self.retired, point):
+            return "counted"
+        return "pending"
+
     def reset(self) -> None:
         self.retired.clear()
         self.pending.clear()
+        self.active = None
         self.total = 0
         for k in self.counts:
             self.counts[k] = 0

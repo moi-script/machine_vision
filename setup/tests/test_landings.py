@@ -95,3 +95,49 @@ def test_reset_clears_everything():
     # And the same spot can score again after a reset, for a new rally.
     _confirm(c, (600.0, 600.0), start=100)
     assert c.total == 1
+
+
+# ── Handover: exactly one shuttle is "active" at a time ──────
+
+def test_the_newest_landing_takes_over_as_active():
+    c = LandingCounter(LINES)
+    _confirm(c, (300.0, 600.0), start=0)
+    first = c.active["id"]
+    _confirm(c, (900.0, 600.0), start=20)
+    assert c.active["id"] != first
+    assert c.active["px"] == [900.0, 600.0]
+
+
+def test_the_previous_active_becomes_counted_not_forgotten():
+    c = LandingCounter(LINES)
+    _confirm(c, (300.0, 600.0), start=0)
+    assert c.state_of((300.0, 600.0)) == "active"
+    _confirm(c, (900.0, 600.0), start=20)
+    # Handover: the old one is history, the new one is live.
+    assert c.state_of((300.0, 600.0)) == "counted"
+    assert c.state_of((900.0, 600.0)) == "active"
+
+
+def test_an_unconfirmed_blob_reads_as_pending():
+    c = LandingCounter(LINES)
+    c.update([(600.0, 600.0)], 0)
+    assert c.state_of((600.0, 600.0)) == "pending"
+
+
+def test_a_counted_shuttle_never_scores_again():
+    # The whole point: the court fills with shuttles and none of them may
+    # re-enter the count.
+    c = LandingCounter(LINES)
+    _confirm(c, (300.0, 600.0), start=0)
+    _confirm(c, (900.0, 600.0), start=20)
+    for f in range(40, 120):
+        c.update([(300.0, 600.0), (900.0, 600.0)], f)
+    assert c.total == 2
+    assert c.active["px"] == [900.0, 600.0]
+
+
+def test_active_survives_small_drift():
+    # A settling shuttle moves a few px; it must stay the active one.
+    c = LandingCounter(LINES)
+    _confirm(c, (600.0, 600.0))
+    assert c.state_of((610.0, 607.0)) == "active"

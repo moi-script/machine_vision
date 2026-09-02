@@ -1,0 +1,233 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Court calibration — AeroSense</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2a2f3a; --ink: #e8ebf0;
+    --dim: #99a1b3; --accent: #5b9dff; --ok: #35c46a; --warn: #f0a02a; --bad: #ff5c5c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .01em; }
+  .sub { color: var(--dim); font-size: 12.5px; }
+  main { padding: 16px 20px 40px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+  .tab { padding: 7px 14px; border: 1px solid var(--line); border-radius: 7px;
+         background: var(--panel); color: var(--dim); cursor: pointer; font-size: 13px; }
+  .tab.on { border-color: var(--accent); color: var(--ink); }
+  .tab .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+              background: var(--dim); margin-right: 7px; vertical-align: middle; }
+  .tab .dot.ok { background: var(--ok); }
+  .wrap { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 18px; }
+  @media (max-width: 1080px) { .wrap { grid-template-columns: 1fr; } }
+  .stage { position: relative; background: #000; border: 1px solid var(--line);
+           border-radius: 9px; overflow: hidden; line-height: 0; }
+  canvas { display: block; width: 100%; height: auto; cursor: crosshair; }
+  aside { background: var(--panel); border: 1px solid var(--line);
+          border-radius: 9px; padding: 14px; align-self: start; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+       color: var(--dim); margin: 0 0 10px; font-weight: 600; }
+  ol { margin: 0 0 14px; padding-left: 20px; }
+  ol li { margin: 3px 0; color: var(--dim); }
+  ol li.done { color: var(--ok); text-decoration: line-through; }
+  ol li.now { color: var(--ink); font-weight: 600; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  button { flex: 1; min-width: 84px; padding: 8px 10px; border-radius: 7px;
+           border: 1px solid var(--line); background: #232833; color: var(--ink);
+           cursor: pointer; font-size: 13px; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #08101f;
+                   font-weight: 600; }
+  .stat { display: flex; justify-content: space-between; gap: 10px;
+          padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .stat:last-child { border-bottom: 0; }
+  .stat span:first-child { color: var(--dim); }
+  .msg { margin-top: 10px; padding: 9px 11px; border-radius: 7px; font-size: 12.5px;
+         white-space: pre-wrap; display: none; }
+  .msg.show { display: block; }
+  .msg.ok { background: #12301f; color: #8ff0b4; }
+  .msg.bad { background: #341617; color: #ffb3b3; }
+  .msg.warn { background: #33270f; color: #ffd694; }
+  label.chk { display: flex; align-items: center; gap: 8px; color: var(--dim);
+              font-size: 13px; margin-bottom: 10px; }
+</style>
+
+<header>
+  <h1>Court calibration</h1>
+  <span class="sub">Click the four corners on each camera, preview, then save.
+    Sources are the <code>angle_*.mp4</code> stand-ins for the rig.</span>
+</header>
+
+<main>
+  <div class="tabs" id="tabs"></div>
+  <div class="wrap">
+    <div class="stage"><canvas id="cv" width="1280" height="720"></canvas></div>
+    <aside>
+      <h2>Click order</h2>
+      <ol id="steps">
+        <li data-i="0">net_left</li>
+        <li data-i="1">net_right</li>
+        <li data-i="2">baseline_right</li>
+        <li data-i="3">baseline_left</li>
+      </ol>
+      <label class="chk"><input type="checkbox" id="singles"> singles court lines</label>
+      <div class="row">
+        <button id="undo">Undo</button>
+        <button id="clear">Clear</button>
+      </div>
+      <div class="row">
+        <button id="reload">New frame</button>
+        <button id="preview">Preview</button>
+      </div>
+      <div class="row"><button id="save" class="primary">Save calibration</button></div>
+      <h2 style="margin-top:16px">Status</h2>
+      <div class="stat"><span>camera</span><b id="s-cam">—</b></div>
+      <div class="stat"><span>points</span><b id="s-pts">0 / 4</b></div>
+      <div class="stat"><span>reproj. error</span><b id="s-err">—</b></div>
+      <div class="stat"><span>calibrated</span><b id="s-cal">no</b></div>
+      <div class="msg" id="msg"></div>
+    </aside>
+  </div>
+</main>
+
+<script>
+const LABELS = ["net_left", "net_right", "baseline_right", "baseline_left"];
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const msg = document.getElementById("msg");
+let cams = [], cam = null, img = new Image(), frameId = null;
+let pts = [], overlay = null;
+
+const $ = id => document.getElementById(id);
+function say(text, kind) {
+  msg.textContent = text;
+  msg.className = "msg show " + (kind || "ok");
+  if (!text) msg.className = "msg";
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(JSON.stringify(body.detail || body));
+  return body;
+}
+
+async function loadCams() {
+  cams = await api("/api/cameras");
+  const t = $("tabs");
+  t.innerHTML = "";
+  cams.forEach(c => {
+    const b = document.createElement("button");
+    b.className = "tab" + (c.camera_id === cam ? " on" : "");
+    b.innerHTML = `<span class="dot ${c.calibrated ? "ok" : ""}"></span>${c.camera_id}`;
+    b.onclick = () => selectCam(c.camera_id);
+    if (!c.source_available) { b.disabled = true; b.title = "no source video"; }
+    t.appendChild(b);
+  });
+}
+
+async function selectCam(id) {
+  cam = id; pts = []; overlay = null;
+  $("s-cam").textContent = id;
+  const c = cams.find(x => x.camera_id === id) || {};
+  $("s-cal").textContent = c.calibrated ? "yes" : "no";
+  $("s-err").textContent = c.reprojection_error_px ?? "—";
+  say("");
+  await loadCams();
+  await loadFrame();
+}
+
+async function loadFrame(index) {
+  const q = index === undefined ? "" : `?index=${index}`;
+  const d = await api(`/api/cameras/${cam}/frame${q}`);
+  frameId = d.frame_id;
+  cv.width = d.width; cv.height = d.height;
+  await new Promise(res => { img.onload = res; img.src = "data:image/jpeg;base64," + d.jpeg_b64; });
+  draw();
+}
+
+function draw() {
+  ctx.drawImage(img, 0, 0, cv.width, cv.height);
+
+  if (overlay) {
+    const seg = (name, color, width) => {
+      const p = overlay[name]; if (!p) return;
+      ctx.strokeStyle = color; ctx.lineWidth = width || 2;
+      ctx.beginPath(); ctx.moveTo(p[0][0], p[0][1]);
+      for (let i = 1; i < p.length; i++) ctx.lineTo(p[i][0], p[i][1]);
+      if (name === "outline") ctx.closePath();
+      ctx.stroke();
+    };
+    seg("outline", "#5b9dff", 3);
+    seg("net_line", "#ff5c5c", 3);
+    ["singles_left","singles_right","short_service","long_service_doubles","centre_line"]
+      .forEach(n => seg(n, "rgba(255,255,255,.75)", 1.5));
+  }
+
+  pts.forEach((p, i) => {
+    ctx.strokeStyle = "#35c46a"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(p[0], p[1], 9, 0, 7); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(p[0]-14,p[1]); ctx.lineTo(p[0]+14,p[1]);
+    ctx.moveTo(p[0],p[1]-14); ctx.lineTo(p[0],p[1]+14); ctx.stroke();
+    ctx.fillStyle = "#35c46a"; ctx.font = "600 15px system-ui";
+    ctx.fillText(`${i+1} ${LABELS[i]}`, p[0] + 15, p[1] - 12);
+  });
+
+  $("s-pts").textContent = `${pts.length} / 4`;
+  document.querySelectorAll("#steps li").forEach(li => {
+    const i = +li.dataset.i;
+    li.className = i < pts.length ? "done" : (i === pts.length ? "now" : "");
+  });
+  $("preview").disabled = pts.length !== 4;
+  $("save").disabled = pts.length !== 4;
+}
+
+cv.addEventListener("click", e => {
+  if (pts.length >= 4) return;
+  const r = cv.getBoundingClientRect();
+  // Canvas is CSS-scaled to fit; convert back to native pixels or every
+  // saved corner would be offset by the display ratio.
+  pts.push([ (e.clientX - r.left) * (cv.width / r.width),
+             (e.clientY - r.top)  * (cv.height / r.height) ]);
+  overlay = null;
+  draw();
+});
+
+$("undo").onclick = () => { pts.pop(); overlay = null; draw(); };
+$("clear").onclick = () => { pts = []; overlay = null; say(""); draw(); };
+$("reload").onclick = () => loadFrame(Math.floor(Math.random() * 1200));
+
+$("preview").onclick = async () => {
+  const d = await api(`/api/cameras/${cam}/calibration/preview`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({frame_id: frameId, corners: pts, singles: $("singles").checked})
+  });
+  if (!d.ok) { overlay = null; draw(); say("Rejected:\n• " + d.errors.join("\n• "), "bad"); return; }
+  overlay = d.overlay;
+  $("s-err").textContent = d.reprojection_error_px;
+  draw();
+  say(d.warnings.length
+      ? "Preview OK.\n• " + d.warnings.join("\n• ")
+      : "Preview OK — check the blue outline sits on the real court lines, then save.",
+      d.warnings.length ? "warn" : "ok");
+};
+
+$("save").onclick = async () => {
+  try {
+    const d = await api(`/api/cameras/${cam}/calibration`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({frame_id: frameId, corners: pts,
+                            singles: $("singles").checked, operator: "web"})
+    });
+    say(`Saved ${d.camera_id} — reprojection error ${d.reprojection_error_px} px`, "ok");
+    await loadCams();
+    $("s-cal").textContent = "yes";
+  } catch (err) { say("Save refused:\n" + err.message, "bad"); }
+};
+
+(async () => { await loadCams(); await selectCam(cams[0].camera_id); })();
+</script>

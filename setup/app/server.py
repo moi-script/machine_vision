@@ -17,13 +17,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.routers import players, sessions, settings as settings_router, control
+from app.routers import players, sessions, settings as settings_router, control, cameras
 
 app.include_router(players.router)
 app.include_router(sessions.router)
 app.include_router(settings_router.router)
 app.include_router(control.router)
 app.include_router(control.media_router)
+app.include_router(cameras.router)
 app.include_router(esp32_enroll.router)
 
 

@@ -83,3 +83,63 @@ def test_player_in_zone_court_coords():
     positions = {7: (settings.COURT_W * 0.16, settings.COURT_L * 0.25)}
     assert zones.get_player_in_zone("front_left", positions) == 7
     assert zones.get_player_in_zone("back_right", positions) is None
+
+
+# ── Per-camera homography cache ──────────────────────────────
+# The rig has front/left/right/back cameras, each seeing the court from its own
+# angle. These guard the property that made the cache necessary: calibrating one
+# camera must not disturb another.
+
+# A different quad, so a mix-up between cameras produces different numbers
+# rather than accidentally-equal ones.
+CORNERS_LEFT = [(200.0, 150.0), (900.0, 150.0), (900.0, 650.0), (200.0, 650.0)]
+
+
+@pytest.fixture(autouse=True)
+def _clear_extra_cameras():
+    yield
+    for cam in list(zones.calibrated_cameras()):
+        if cam != zones.DEFAULT_CAMERA:
+            zones.clear_homography(cam)
+
+
+def test_cameras_do_not_share_a_homography():
+    zones.build_homography(CORNERS_LEFT, camera_id="left")
+    # The default camera still maps its own corners to the canonical origin.
+    assert zones.to_court((100.0, 100.0)) == pytest.approx((0.0, 0.0), abs=1e-3)
+    # The left camera maps ITS corners there instead.
+    assert zones.to_court((200.0, 150.0), camera_id="left") == pytest.approx(
+        (0.0, 0.0), abs=1e-3)
+    # And the same pixel means different things to the two cameras.
+    assert zones.to_court((900.0, 650.0), camera_id="left") != pytest.approx(
+        zones.to_court((900.0, 650.0)), abs=1e-3)
+
+
+def test_court_to_pixel_is_inverse_per_camera():
+    zones.build_homography(CORNERS_LEFT, camera_id="left")
+    px = (450.0, 380.0)
+    back = zones.court_to_pixel(zones.to_court(px, camera_id="left"), camera_id="left")
+    assert back == pytest.approx(px, abs=1e-3)
+
+
+def test_uncalibrated_camera_raises_rather_than_borrowing():
+    # Silently falling back to another camera's geometry would produce
+    # plausible, wrong court positions — the worst failure mode here.
+    with pytest.raises(ValueError, match="no homography"):
+        zones.to_court((300.0, 400.0), camera_id="back")
+
+
+def test_failed_rebuild_leaves_previous_homography_intact():
+    zones.build_homography(CORNERS_LEFT, camera_id="left")
+    before = zones.to_court((450.0, 380.0), camera_id="left")
+    with pytest.raises(ValueError):
+        zones.build_homography([(0, 0), (1, 1)], camera_id="left")
+    assert zones.to_court((450.0, 380.0), camera_id="left") == pytest.approx(
+        before, abs=1e-6)
+
+
+def test_clear_homography_forgets_one_camera():
+    zones.build_homography(CORNERS_LEFT, camera_id="left")
+    assert "left" in zones.calibrated_cameras()
+    zones.clear_homography("left")
+    assert "left" not in zones.calibrated_cameras()

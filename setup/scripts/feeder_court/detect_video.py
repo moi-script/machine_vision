@@ -88,6 +88,45 @@ def draw(frame, boxes, frame_idx: int, label: str, min_marker: int = 26) -> None
     cv2.putText(frame, hud, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, HUD_COLOR, 2, cv2.LINE_AA)
 
 
+def playback(video_path: str, target_fps: float | None) -> None:
+    """Play an already-annotated clip at real speed.
+
+    Inference costs ~113 ms/frame, so --show can never exceed ~9 fps. The boxes
+    in a *_boxed.mp4 are already burned in, so replaying the file needs no model
+    and hits the clip's native rate. This is the only way to judge whether the
+    detections track the shuttle smoothly rather than as a slideshow.
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise SystemExit(f"cannot open: {video_path}")
+    fps = target_fps or cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    print(f"playback {video_path}  {total} frames @ {fps:.1f} fps  (q quit, SPACE pause)")
+
+    shown = 0
+    while True:
+        started = time.perf_counter()
+        ok, frame = cap.read()
+        if not ok:
+            break
+        cv2.imshow(WINDOW, frame)
+        shown += 1
+        spent_ms = (time.perf_counter() - started) * 1000.0
+        key = cv2.waitKey(max(int(1000.0 / fps - spent_ms), 1)) & 0xFF
+        if key in (ord("q"), 27):
+            break
+        if key == ord(" "):
+            while True:
+                k2 = cv2.waitKey(50) & 0xFF
+                if k2 in (ord(" "), ord("q"), 27):
+                    break
+            if k2 in (ord("q"), 27):
+                break
+    cap.release()
+    cv2.destroyAllWindows()
+    print(f"played {shown}/{total} frames")
+
+
 def run_video(model, video_path: str, label: str, args, segments: dict) -> dict:
     if not os.path.exists(video_path):
         raise SystemExit(f"missing video: {video_path}")
@@ -113,6 +152,7 @@ def run_video(model, video_path: str, label: str, args, segments: dict) -> dict:
     t0 = time.perf_counter()
 
     for frame_idx in range(start, end):
+        frame_started = time.perf_counter()
         ok, frame = cap.read()
         if not ok:
             break
@@ -138,10 +178,16 @@ def run_video(model, video_path: str, label: str, args, segments: dict) -> dict:
 
         if args.show:
             cv2.imshow(WINDOW, frame)
-            # Every frame is scored, so the window advances at inference speed
-            # rather than at the clip's fps — this shows what the model sees,
-            # not a real-time playback of it.
-            key = cv2.waitKey(1) & 0xFF
+            # Every frame is scored, so the window advances at inference speed.
+            # --fps can only SLOW that down to a target rate, never speed it up:
+            # at 106 ms/frame the ceiling is ~9 fps on this CPU, so asking for 30
+            # changes nothing. To watch a clip at true 30 fps, play back the
+            # written *_boxed.mp4 instead of re-running inference.
+            wait_ms = 1
+            if args.fps:
+                elapsed_ms = (time.perf_counter() - frame_started) * 1000.0
+                wait_ms = max(int(1000.0 / args.fps - elapsed_ms), 1)
+            key = cv2.waitKey(wait_ms) & 0xFF
             if key in (ord("q"), 27):
                 quit_early = True
                 break
@@ -194,6 +240,12 @@ def main() -> None:
     parser.add_argument("--backend", choices=["torch", "openvino"], default="openvino",
                         help="openvino is ~7x faster on this CPU and numerically equivalent")
     parser.add_argument("--show", action="store_true", help="live window with the boxes drawn")
+    parser.add_argument("--playback", default=None,
+                        help="replay an already-annotated *_boxed.mp4 at real speed; "
+                             "runs no model, so it is not capped by inference cost")
+    parser.add_argument("--fps", type=float, default=None,
+                        help="pace the --show window to this rate; can only slow "
+                             "playback down, never below the inference cost per frame")
     parser.add_argument("--no-save", action="store_true", dest="no_save",
                         help="skip writing the annotated mp4 (pair with --show)")
     parser.add_argument("--full", action="store_true", help="ignore segments.json, process the whole clip")
@@ -201,6 +253,10 @@ def main() -> None:
 
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     os.chdir(root)
+
+    if args.playback:
+        playback(args.playback, args.fps)
+        return
 
     if not os.path.exists(args.weights):
         raise SystemExit(f"missing weights: {args.weights}")

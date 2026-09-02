@@ -136,7 +136,7 @@ class Worker:
                        "error": None, "loading": True,
                        "calibrated": bool(self.calib),
                        "landings": 0, "counts": {}, "last_call": None,
-                       "active": None}
+                       "active": None, "seeding": False}
         self._threads: list[threading.Thread] = []
 
     # ── lifecycle ────────────────────────────────────────────
@@ -206,10 +206,19 @@ class Worker:
             box = self._crop_box(frame.shape[1], frame.shape[0])
             src = frame[box[1]:box[3], box[0]:box[2]] if box else frame
             try:
-                res = model.predict(src, imgsz=self.cfg["imgsz"],
-                                    conf=self.cfg.get("conf", 0.25),
-                                    classes=[0] if self.cfg.get("task") == "pose" else None,
-                                    verbose=False)[0]
+                if self.counter is not None:
+                    # Track, not predict: stable ids are what make "is this a
+                    # new shuttle" answerable. Radius matching could not tell a
+                    # jittering box from a second shuttle.
+                    res = model.track(src, imgsz=self.cfg["imgsz"],
+                                      conf=self.cfg.get("conf", 0.25),
+                                      persist=True, tracker="bytetrack.yaml",
+                                      verbose=False)[0]
+                else:
+                    res = model.predict(src, imgsz=self.cfg["imgsz"],
+                                        conf=self.cfg.get("conf", 0.25),
+                                        classes=[0] if self.cfg.get("task") == "pose" else None,
+                                        verbose=False)[0]
             except Exception as exc:
                 with self._lock:
                     self._stats["error"] = str(exc)
@@ -321,11 +330,12 @@ class Worker:
                     if self.counter is not None:
                         # Update first, then draw: the state of each shuttle
                         # (active / counted / pending) is what gets drawn.
-                        pts = _landing_points(res[0], res[1], self.cfg.get("max_side"))
-                        for ev in self.counter.update(pts, frames):
+                        tracks = _landing_tracks(res[0], res[1],
+                                                 self.cfg.get("max_side"))
+                        for ev in self.counter.update(tracks, frames):
                             with self._lock:
                                 self._stats["last_call"] = ev
-                        n = _draw_landings(view, pts, self.counter)
+                        n = _draw_landings(view, tracks, self.counter)
                     else:
                         n = self._draw(view, res[0], res[1])
 
@@ -338,7 +348,8 @@ class Worker:
                 _draw_calibration(view, self.calib)
 
                 if self.counter is not None:
-                    _draw_counts(view, self.counter.counts, self.counter.active)
+                    _draw_counts(view, self.counter.counts, self.counter.active,
+                                 self.counter.seeding)
 
                 frames += 1
                 # Measured across the WHOLE cycle including the pacing sleep
@@ -370,6 +381,7 @@ class Worker:
                             self._stats["landings"] = self.counter.total
                             self._stats["counts"] = dict(self.counter.counts)
                             self._stats["active"] = self.counter.active
+                            self._stats["seeding"] = self.counter.seeding
 
                 slack = min_dt - (time.perf_counter() - started)
                 if slack > 0:
@@ -408,61 +420,61 @@ def _draw_calibration(frame, calib) -> None:
         cv2.polylines(frame, [pts], True, (0, 122, 255), 2, cv2.LINE_AA)
 
 
-def _landing_points(res, box, max_side):
-    """Bottom-centre of each surviving box, in full-frame coordinates.
+def _landing_tracks(res, box, max_side):
+    """[(track_id, (x, y))] in full-frame coordinates, one per surviving box.
 
-    Bottom-centre rather than the centroid: the centre floats half a shuttle
-    above the floor, which at this scale is centimetres of line-call error.
+    The point is the box's bottom-centre, not its centroid: the centre floats
+    half a shuttle above the floor, which at this scale is centimetres of
+    line-call error.
     """
     ox, oy = (box[0], box[1]) if box else (0, 0)
+    ids = res.boxes.id
     out = []
     for i in range(len(res.boxes)):
         x1, y1, x2, y2 = res.boxes.xyxy[i].tolist()
         if max_side and max(x2 - x1, y2 - y1) > max_side:
             continue
-        out.append(((x1 + x2) / 2.0 + ox, y2 + oy))
+        tid = int(ids[i]) if ids is not None else None
+        out.append((tid, ((x1 + x2) / 2.0 + ox, y2 + oy),
+                    (int(x1 + ox), int(y1 + oy), int(x2 + ox), int(y2 + oy))))
     return out
 
 
-ACTIVE_COLOR = (0, 255, 0)      # the shuttle that just landed
-COUNTED_COLOR = (110, 110, 110)  # already scored, out of contention
-PENDING_COLOR = (0, 200, 255)    # seen, not yet confirmed
+ACTIVE_COLOR = (0, 255, 0)       # the shuttle that just landed
+PENDING_COLOR = (0, 200, 255)    # a new track, not yet counted
 
 
-def _draw_landings(frame, points, counter) -> int:
-    """Draw every shuttle in its current state.
+def _draw_landings(frame, tracks, counter) -> int:
+    """Box the shuttle that just landed. Counted ones are not drawn at all.
 
-    Only one is ever green. Counting shuttles per frame is meaningless once the
-    court fills up - by the end of lines.mp4 there are 5140 raw detections - so
-    what the display has to answer is which one just arrived, not how many are
-    lying there.
+    Marking every shuttle on the floor made the display unreadable once dozens
+    had accumulated, and none of them can score again anyway. The only mark that
+    carries information is the current one.
     """
-    for p in points:
-        state = counter.state_of(p)
-        x, y = int(p[0]), int(p[1])
-        if state == "counted":
-            cv2.circle(frame, (x, y), 7, COUNTED_COLOR, 1, cv2.LINE_AA)
-        elif state == "pending":
-            cv2.circle(frame, (x, y), 10, PENDING_COLOR, 1, cv2.LINE_AA)
-        # "active" is drawn below from its stored position instead.
+    a = counter.active or {}
+    for tid, _point, box in tracks:
+        state = counter.state_of(tid)
+        if state in ("counted", "active"):
+            continue          # counted ones vanish; the active one is drawn below
+        if not counter.seeding:
+            x1, y1, x2, y2 = box
+            cv2.rectangle(frame, (x1, y1), (x2, y2), PENDING_COLOR, 1)
 
-    # The active marker is drawn from the registry, not from this frame's
-    # detections. The detector does not find every shuttle in every frame - it
-    # reported det=0 on plenty of them - and a highlight that blinks out
-    # whenever that happens is useless for judging a call.
-    a = counter.active
-    if not a:
+    # The active box comes from the registry, not from this frame. The detector
+    # misses shuttles between inferences (det=0 is common), and a box that
+    # blinks out is useless for judging a call.
+    if not a or not a.get("box"):
         return 0
-    x, y = int(a["px"][0]), int(a["px"][1])
-    cv2.circle(frame, (x, y), 20, ACTIVE_COLOR, 2, cv2.LINE_AA)
-    cv2.drawMarker(frame, (x, y), ACTIVE_COLOR, cv2.MARKER_CROSS, 26, 2)
+    x1, y1, x2, y2 = a["box"]
+    pad = 10
+    cv2.rectangle(frame, (x1 - pad, y1 - pad), (x2 + pad, y2 + pad), ACTIVE_COLOR, 2)
     call = "  ".join(f"{c}:{a[c]}" for c in ("green", "red") if c in a)
-    cv2.putText(frame, f"#{a.get('id','')}  {call}", (x + 26, y - 10),
+    cv2.putText(frame, f"#{a.get('id','')}  {call}", (x1 - pad, max(y1 - pad - 8, 14)),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACTIVE_COLOR, 2, cv2.LINE_AA)
     return 1
 
 
-def _draw_counts(frame, counts, active=None) -> None:
+def _draw_counts(frame, counts, active=None, seeding=False) -> None:
     rows = [("green in", counts.get("green_inside", 0), (120, 196, 53)),
             ("green out", counts.get("green_outside", 0), (120, 196, 53)),
             ("red in", counts.get("red_inside", 0), (59, 59, 255)),
@@ -472,7 +484,10 @@ def _draw_counts(frame, counts, active=None) -> None:
         cv2.putText(frame, f"{label}: {n}", (10, y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
         y += 24
-    if active:
+    if seeding:
+        cv2.putText(frame, "seeding: shuttles already on court", (10, y + 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2, cv2.LINE_AA)
+    elif active:
         call = "  ".join(f"{c}:{active[c]}" for c in ("green", "red") if c in active)
         cv2.putText(frame, f"active #{active['id']}  {call}", (10, y + 4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACTIVE_COLOR, 2, cv2.LINE_AA)

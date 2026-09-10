@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=AeroSense Kiosk
+Comment=Fullscreen AeroSense UI, launched at desktop login
+Exec=/opt/aerosense/setup/deploy/kiosk-launch.sh /usr/bin/chromium-browser
+X-GNOME-Autostart-enabled=true
+NoDisplay=true

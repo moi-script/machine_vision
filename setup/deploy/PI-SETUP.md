@@ -14,10 +14,10 @@
 ## 1. Base image
 
 Flash Pi OS 64-bit with Raspberry Pi Imager. In the Imager's advanced options
-set the hostname, enable SSH, and create the user **`aerosense`** — the systemd
-units run as that user and reference `/home/aerosense/.Xauthority`. If you use
-a different name, set `RUN_USER` when running `install.sh` and edit both unit
-files.
+set the hostname, enable SSH, and create the user **`aerosense`** — the backend
+systemd unit runs as that user, and the kiosk browser is autostarted from
+that user's desktop session. If you use a different name, set `RUN_USER` when
+running `install.sh` and edit `aerosense.service` too.
 
 Then, on the Pi:
 
@@ -25,8 +25,9 @@ Then, on the Pi:
       System Options  -> Boot / Auto Login -> Desktop Autologin
       Advanced        -> Wayland           -> X11
 
-X11 rather than Wayland: `kiosk.service` sets `DISPLAY=:0` and `XAUTHORITY`,
-which is the X11 contract.
+X11 rather than Wayland: the kiosk autostart entry runs `chromium` under the
+X11 session that LightDM's autologin brings up. (`DISPLAY`/`XAUTHORITY` come
+from that session automatically — nothing in this repo has to guess them.)
 
 ## 2. Clone and install
 
@@ -37,25 +38,29 @@ which is the X11 contract.
     sudo ./deploy/install.sh
 
 `/opt/aerosense` is baked into `aerosense.service`'s `WorkingDirectory`. To put
-it elsewhere, edit both unit files.
+it elsewhere, edit that unit file.
 
 `install.sh` also detects whether this image's browser binary is
-`/usr/bin/chromium-browser` or `/usr/bin/chromium` and installs `kiosk.service`
-with the right one — see the troubleshooting table below if that ever looks
-wrong.
+`/usr/bin/chromium-browser` or `/usr/bin/chromium` and writes the kiosk
+autostart entry with the right one — see the troubleshooting table below if
+that ever looks wrong.
 
-## 3. Add your Roboflow API key
+## 3. Roboflow API key (optional — not needed by default)
 
 `install.sh` writes `/opt/aerosense/setup/.env` with an **empty**
-`ROBOFLOW_API_KEY` — that file is gitignored, so a real key can never be
-committed, and the script has no way to fill it in for you. Before shuttle
-detection will work, edit the file by hand:
+`ROBOFLOW_API_KEY`. The shipped configuration
+(`config/settings.py: SHUTTLE_SOURCE = "local"`) detects the shuttle from the
+committed local weights file and needs no key at all — this is what keeps the
+appliance working with no internet on court.
+
+Only fill this in if you deliberately switch `SHUTTLE_SOURCE` to
+`"serverless"` to use the Roboflow cloud workflow instead:
 
     sudo -u aerosense nano /opt/aerosense/setup/.env
     # set ROBOFLOW_API_KEY=<your key>
 
-Skipping this step does not produce an obvious error — shuttle detection just
-silently fails, which looks like a model problem rather than a missing key.
+`.env` is gitignored, so a real key can never be committed — `install.sh` has
+no way to fill it in for you, which is why it is left empty.
 
 ## 4. Assign the four cameras
 
@@ -93,24 +98,37 @@ The Pi should come up into the fullscreen UI with no interaction.
 
 ## Operating it
 
-    systemctl status aerosense kiosk mongod
-    journalctl -u aerosense -f          # backend logs
-    sudo systemctl restart kiosk        # just reload the display
+The backend is a systemd service; the kiosk browser is a per-user XDG
+autostart entry (not a systemd unit — `graphical-session.target` only exists
+in the systemd *user* manager, so a system-level kiosk unit enabled against it
+would silently never start; the fullscreen browser is launched by the desktop
+session itself instead).
+
+    systemctl status aerosense mongod    # backend + database
+    journalctl -u aerosense -f           # backend logs
+    pgrep -af chromium                   # is the kiosk browser actually running?
+
+    # reload just the display, without a full reboot
+    sudo -u aerosense pkill chromium     # kiosk-launch.sh relaunches it automatically
 
     # ship an update (UI bundle is built on the Windows box)
     cd /opt/aerosense && git pull && git lfs pull
     sudo systemctl restart aerosense
 
+There is no `systemctl status kiosk` — that would be checking a unit that
+does not exist under this mechanism. Use `pgrep -af chromium` or look at the
+desktop directly.
+
 ## Troubleshooting
 
 | Symptom | Check |
 |---|---|
-| Black screen, no UI | `systemctl status kiosk`; is autologin to desktop on? Is it X11, not Wayland? |
-| Black screen, backend is healthy | Wrong chromium binary. `ls -l /usr/bin/chromium-browser /usr/bin/chromium` and compare against `ExecStart=` in `/etc/systemd/system/kiosk.service` — re-run `install.sh` to regenerate it |
+| Black screen, no UI | Is autologin to desktop on? Is it X11, not Wayland? Then check `cat /home/aerosense/.config/autostart/kiosk.desktop` exists and `pgrep -af chromium` |
+| Black screen, backend is healthy | Wrong chromium binary. `ls -l /usr/bin/chromium-browser /usr/bin/chromium` and compare against the `Exec=` line in `/home/aerosense/.config/autostart/kiosk.desktop` — re-run `install.sh` to regenerate it |
 | UI loads, no data | `curl localhost:8000/api/health`; `journalctl -u aerosense -n 50` |
 | `"mongo": false` in health | `systemctl status mongod`; on a Pi 4 Mongo 7 cannot run at all |
-| Shuttle detection never fires | `ROBOFLOW_API_KEY` in `/opt/aerosense/setup/.env` is still empty — `install.sh` never fills it in for you |
+| Shuttle detection never fires and you switched to serverless | `ROBOFLOW_API_KEY` in `/opt/aerosense/setup/.env` is still empty — see step 3 |
 | Only 1-2 cameras give frames | USB bandwidth. Confirm MJPG: `v4l2-ctl -d <dev> --list-formats`. Spread cameras across both USB3 and USB2 ports |
 | Cameras swapped after reboot | A slot is stored as an `index`, not a by-id `path`. Reassign it in the UI |
 | Everything is slow, then slower | Thermal throttling: `vcgencmd measure_temp`, `vcgencmd get_throttled` (nonzero = throttled) |
-| First drill stalls for minutes | An NCNN export was not warmed. Re-run `install.sh` |
+| Live-detection view (Cameras page) stalls for minutes the first time | Its NCNN export was not warmed. Re-run `install.sh` |

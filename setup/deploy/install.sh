@@ -15,6 +15,8 @@ die() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "run with sudo"
 [ "$(uname -m)" = "aarch64" ] || die "expected aarch64, got $(uname -m) - use Pi OS 64-bit"
+id "$RUN_USER" >/dev/null 2>&1 || die \
+  "user $RUN_USER does not exist - create it (see PI-SETUP.md) or re-run with RUN_USER=<user>"
 
 # ── the committed UI bundle ─────────────────────────────────
 log "checking the UI bundle"
@@ -24,7 +26,10 @@ log "checking the UI bundle"
 
 # ── LFS-tracked model weights ───────────────────────────────
 log "pulling LFS objects (model weights, face ONNX)"
-command -v git-lfs >/dev/null || apt-get install -y git-lfs
+# apt lists may be empty/stale on a freshly flashed image - update before the
+# very first apt-get install, not just before the "system packages" section
+# below, or this dies on "Unable to locate package git-lfs".
+command -v git-lfs >/dev/null || { apt-get update; apt-get install -y git-lfs; }
 sudo -u "$RUN_USER" git -C "$ROOT/.." lfs pull
 for w in models/shuttle_clear_badminton_p2.pt models/shuttle_lines_stock_n.pt \
          models/yolov8n-pose.pt models/face_detection_yunet_2023mar.onnx \
@@ -40,12 +45,16 @@ apt-get update
 # python3-opencv from apt, not pip: a pip opencv-python build on the Pi is slow
 # and frequently fails. The venv is created --system-site-packages so it is
 # visible.
-apt-get install -y python3-venv python3-pip python3-opencv chromium-browser \
+apt-get install -y python3-venv python3-pip python3-opencv \
                    v4l-utils curl gnupg
+# Raspberry Pi OS images differ on the browser package name too - installed
+# in its own guarded step so a mismatch here doesn't abort the whole section
+# before the binary check below ever runs.
+apt-get install -y chromium-browser || apt-get install -y chromium || true
 
 # ── kiosk browser binary ────────────────────────────────────
-# Raspberry Pi OS images differ on the binary name: chromium-browser on some,
-# chromium on others. kiosk.service hardcodes chromium-browser as its
+# ...and they differ on the installed *binary* path the same way. kiosk is
+# launched via an XDG autostart entry that hardcodes chromium-browser as its
 # committed default; get this wrong and the symptom is a black screen with a
 # perfectly healthy backend - one of the worst combinations to debug.
 log "checking the kiosk browser"
@@ -68,13 +77,31 @@ https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" \
   apt-get update
   apt-get install -y mongodb-org
 fi
+# mongodb-org normally pulls in mongodb-mongosh, but check separately from
+# "is mongod answering" below - a missing mongosh (exit 127) and a mongod
+# that truly isn't listening are two different problems, and the combined
+# check used to blame the database for a client that's simply not there.
+command -v mongosh >/dev/null || die "mongosh missing: apt-get install -y mongodb-mongosh"
 systemctl enable --now mongod
-mongosh --quiet --eval 'db.runCommand({ping:1}).ok' | grep -q 1 \
-  || die "mongod is not answering"
+
+log "waiting for mongod"
+mongo_ok() { [ "$(mongosh --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null)" = "1" ]; }
+for _ in $(seq 30); do
+  mongo_ok && break
+  sleep 1
+done
+# Run under `set -e` directly (not piped through grep) - under pipefail a
+# `mongosh | grep -q` pipe can hand mongosh a SIGPIPE the instant grep finds
+# its match, and pipefail turns that into a failure even when Mongo is fine.
+mongo_ok || die "mongod is not answering: journalctl -u mongod -n 50"
 
 # ── Python environment ──────────────────────────────────────
 log "creating the venv"
-[ -d "$VENV" ] || sudo -u "$RUN_USER" python3 -m venv --system-site-packages "$VENV"
+# Guard on the interpreter, not just the directory: a venv creation
+# interrupted partway (Ctrl-C, power loss, an earlier die) leaves the
+# directory in place with no bin/pip, and re-running with `[ -d "$VENV" ]`
+# would then die confusingly on a missing pip instead of just recreating it.
+[ -x "$VENV/bin/python" ] || sudo -u "$RUN_USER" python3 -m venv --system-site-packages "$VENV"
 sudo -u "$RUN_USER" "$VENV/bin/pip" install --upgrade pip
 # opencv-python comes from apt (above); dropping it here avoids a source build.
 sudo -u "$RUN_USER" grep -v '^opencv-python' "$ROOT/requirements.txt" \
@@ -91,16 +118,21 @@ ROBOFLOW_API_KEY=
 MONGO_URL=mongodb://localhost:27017/
 MONGO_DB=aerosense
 ENV
-  chown "$RUN_USER" "$ROOT/.env"
+  # Group, not just owner, and no world/group read - this file can end up
+  # holding a real API key.
+  chown "$RUN_USER:$RUN_USER" "$ROOT/.env"
+  chmod 600 "$ROOT/.env"
   cat >&2 <<'WARN'
 
     ###########################################################
-    #  ACTION REQUIRED                                        #
+    #  NOTE                                                    #
     #                                                          #
-    #  .env was written with an EMPTY ROBOFLOW_API_KEY.        #
-    #  Shuttle detection will fail - and it will look like a   #
-    #  model problem, not a missing-key problem - until you    #
-    #  edit /opt/aerosense/setup/.env by hand and add it.      #
+    #  .env was written with an EMPTY ROBOFLOW_API_KEY. The    #
+    #  shipped config uses SHUTTLE_SOURCE=local (a committed   #
+    #  weights file), so shuttle detection works offline with  #
+    #  no key at all. Only fill this in if you deliberately    #
+    #  switch SHUTTLE_SOURCE to "serverless" for the Roboflow  #
+    #  cloud workflow - see config/settings.py.                #
     #  .env is gitignored: install.sh can never commit a real  #
     #  key for you.                                            #
     ###########################################################
@@ -109,8 +141,10 @@ WARN
 fi
 
 # ── warm the NCNN exports ───────────────────────────────────
-# First use triggers an export that takes minutes. Doing it here means the
-# first drill does not stall.
+# First use of the Cameras / live-detection page triggers an export that
+# takes minutes. Doing it here means that page does not stall the first time
+# it is opened. (The drill engine loads its models separately, in plain
+# torch, straight from committed weights - it needs no warm-up.)
 log "warming NCNN exports (several minutes)"
 cd "$ROOT"
 sudo -u "$RUN_USER" "$VENV/bin/python" - <<'PY'
@@ -126,16 +160,11 @@ for key in ("shuttle", "landed", "pose"):
 print("exports ready")
 PY
 
-# ── systemd units ───────────────────────────────────────────
-log "installing systemd units"
+# ── aerosense backend systemd unit ──────────────────────────
+log "installing the aerosense systemd unit"
 install -m644 "$ROOT/deploy/aerosense.service" /etc/systemd/system/
-# kiosk.service in git keeps chromium-browser as its documented default;
-# substitute in whichever binary this image actually has.
-sed "s|^ExecStart=/usr/bin/chromium-browser|ExecStart=$KIOSK_BIN|" \
-  "$ROOT/deploy/kiosk.service" > /etc/systemd/system/kiosk.service
-chmod 644 /etc/systemd/system/kiosk.service
 systemctl daemon-reload
-systemctl enable aerosense.service kiosk.service
+systemctl enable aerosense.service
 systemctl restart aerosense.service
 
 log "waiting for the API"
@@ -145,6 +174,25 @@ for _ in $(seq 30); do
 done
 curl -fsS http://127.0.0.1:8000/api/health || die "the API never came up: journalctl -u aerosense -n 50"
 echo
+
+# ── kiosk autostart (user-session XDG entry, not a system unit) ─
+# graphical-session.target is a systemd *user*-manager target - the system
+# manager never activates it, so a system-level kiosk.service enabled here
+# would silently never start. Ship it the conventional Pi way instead: an
+# XDG autostart .desktop entry that the desktop session runs directly once
+# LightDM's autologin brings up X11, where DISPLAY/XAUTHORITY are already
+# real and no target games are needed.
+log "installing the kiosk autostart entry"
+RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
+[ -n "$RUN_HOME" ] && [ -d "$RUN_HOME" ] || die "no home directory for $RUN_USER"
+chmod 755 "$ROOT/deploy/kiosk-launch.sh"
+sudo -u "$RUN_USER" mkdir -p "$RUN_HOME/.config/autostart"
+# kiosk.desktop in git keeps chromium-browser as its documented default;
+# substitute in whichever binary this image actually has.
+sed "s|^Exec=/opt/aerosense/setup/deploy/kiosk-launch.sh /usr/bin/chromium-browser|Exec=/opt/aerosense/setup/deploy/kiosk-launch.sh $KIOSK_BIN|" \
+  "$ROOT/deploy/kiosk.desktop" > "$RUN_HOME/.config/autostart/kiosk.desktop"
+chown "$RUN_USER:$RUN_USER" "$RUN_HOME/.config/autostart/kiosk.desktop"
+chmod 644 "$RUN_HOME/.config/autostart/kiosk.desktop"
 
 log "done. Reboot to bring up the kiosk: sudo reboot"
 echo "    Cameras still need assigning - see deploy/PI-SETUP.md."

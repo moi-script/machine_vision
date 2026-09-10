@@ -657,7 +657,7 @@ class DrillEngine:
         shuttle_worker = None
         try:
             if self._player_model is None:
-                self._player_model = YOLO("yolov8n-pose.pt")
+                self._player_model = YOLO("models/yolov8n-pose.pt")
             player_model = self._player_model
 
             # Load shuttle detection source (local weights / serverless / off).

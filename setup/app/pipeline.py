@@ -29,6 +29,7 @@ are 3-6 MB.
 from __future__ import annotations
 
 import os
+import platform
 import threading
 import time
 
@@ -37,6 +38,7 @@ import numpy as np
 
 from app import sources
 from app.landings import LandingCounter
+from config import settings
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -85,36 +87,58 @@ def model_catalog() -> list[dict]:
     return out
 
 
-def _load(weights: str, imgsz: int, task: str, backend: str):
-    """Load, exporting to OpenVINO on first use for that imgsz.
+# Inference backend by CPU architecture. OpenVINO is Intel-oriented and has no
+# useful Pi story; NCNN is the ultralytics-recommended aarch64 export. Unknown
+# architectures fall toward NCNN because it is the portable one.
+_X86 = ("AMD64", "x86_64")
 
-    OpenVINO bakes the input size in, so each imgsz needs its own export
-    directory - reusing a 640 export at 1280 silently runs at 640.
+
+def resolve_backend(machine: str) -> str:
+    return "openvino" if machine in _X86 else "ncnn"
+
+
+DEFAULT_BACKEND = resolve_backend(platform.machine())
+
+
+def _export_dir(path: str, imgsz: int, backend: str) -> str:
+    """Per-(size, backend) export cache path.
+
+    Both backends bake the input size in, so each imgsz needs its own
+    directory - reusing a 640 export at 1280 silently runs at 640. The
+    backend is in the name too so an OpenVINO tree is never loaded as NCNN.
     """
+    return f"{os.path.splitext(path)[0]}_{imgsz}_{backend}_model"
+
+
+def _load(weights: str, imgsz: int, task: str, backend: str):
+    """Load, exporting for `backend` on first use for that imgsz."""
     from ultralytics import YOLO
     path = _resolve(weights)
     if not os.path.exists(path):
         raise FileNotFoundError(f"weights missing: {weights}")
     if backend == "torch":
         return YOLO(path)
-    ov_dir = f"{os.path.splitext(path)[0]}_{imgsz}_openvino_model"
-    if not os.path.isdir(ov_dir):
-        produced = YOLO(path).export(format="openvino", imgsz=imgsz, half=False)
-        os.rename(str(produced), ov_dir)
-    return YOLO(ov_dir, task=task)
+    out_dir = _export_dir(path, imgsz, backend)
+    if not os.path.isdir(out_dir):
+        produced = YOLO(path).export(format=backend, imgsz=imgsz, half=False)
+        os.rename(str(produced), out_dir)
+    return YOLO(out_dir, task=task)
 
 
 class Worker:
     """Capture thread + inference thread + the newest annotated JPEG."""
 
     def __init__(self, camera_id: str, model_key: str = "none",
-                 backend: str = "openvino", target_fps: float = 30.0,
+                 backend: str | None = None, target_fps: float = 30.0,
                  top_n: int | None = None):
         self.camera_id = camera_id
         self.model_key = model_key
-        self.backend = backend
+        self.backend = backend or DEFAULT_BACKEND
         self.target_fps = target_fps
         self.cfg = dict(MODELS.get(model_key) or {})
+        # Pi: override the x86 input sizes (see settings.PI_IMGSZ).
+        if self.backend == "ncnn" and model_key in settings.PI_IMGSZ:
+            self.cfg["imgsz"] = settings.PI_IMGSZ[model_key]
         if top_n is not None:
             self.cfg["top_n"] = top_n
 
@@ -497,7 +521,7 @@ _workers: dict[str, Worker] = {}
 _wlock = threading.Lock()
 
 
-def start(camera_id: str, model_key: str = "none", backend: str = "openvino",
+def start(camera_id: str, model_key: str = "none", backend: str | None = None,
           target_fps: float = 30.0, top_n: int | None = None) -> dict:
     if model_key not in MODELS:
         raise ValueError(f"unknown model {model_key!r}")
@@ -507,7 +531,7 @@ def start(camera_id: str, model_key: str = "none", backend: str = "openvino",
         _workers[camera_id] = w
     w.start()
     # Long enough to surface an immediate failure (missing weights, dead device)
-    # but not long enough to block the request on a first-time OpenVINO export.
+    # but not long enough to block the request on a first-time model export.
     time.sleep(0.5)
     return w.stats
 

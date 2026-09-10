@@ -291,7 +291,7 @@ def set_source(camera_id: str, body: SourceBody):
 
 class StartBody(BaseModel):
     model: str = "none"
-    backend: str = "openvino"
+    backend: str | None = None
     target_fps: float = 30.0
     top_n: int | None = None
 

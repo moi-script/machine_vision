@@ -157,3 +157,11 @@ ESP32_CAM_TIMEOUT_S: float = 5.0
 # Live preview feed runs on its own server on the board — see the sketch's
 # startStreamServer(). Must match STREAM_PORT in esp_camera_face_detection.ino.
 ESP32_CAM_STREAM_PORT: int = 81
+
+# --- Raspberry Pi inference sizes ---
+# On aarch64 the models run on CPU under NCNN, several times slower than
+# OpenVINO on x86. START.md measures `landed` at 640 as strictly the better
+# deal (18.3 ms vs 54.9 ms at 1280, still firing on 98% of frames), and the
+# same argument applies to `shuttle`. app/pipeline.py applies these only when
+# resolve_backend() picks ncnn.
+PI_IMGSZ = {"shuttle": 640, "landed": 640, "pose": 640}

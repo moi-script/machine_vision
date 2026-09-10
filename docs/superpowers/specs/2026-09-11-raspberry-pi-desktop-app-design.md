@@ -58,6 +58,24 @@ systemd ordering: `aerosense.service` gets `After=mongod.service` and
 
 ## Component changes
 
+### 0. Model weights must reach the Pi at all
+
+Found while planning: the three weights `pipeline.MODELS` loads are **untracked**.
+`.gitignore:16` excludes `runs/`, and `*.pt` is excluded with only
+`!models/*.pt` re-included, so `runs/clear_badminton/p2-native/weights/best.pt`
+(shuttle), `runs/shuttle_lines/stock-n/weights/best.pt` (landed), and the root
+`yolov8n-pose.pt` exist only on the machine that trained them. A `git pull` on
+the Pi would deliver no models.
+
+Fix: copy all three under `setup/models/`, which `.gitattributes` already
+tracks with Git LFS (`setup/models/*.pt`, `setup/models/*.onnx`) — the same path
+`models/shuttlecock.pt` and the face ONNX models already use — and update the
+`MODELS` dict. The `runs/` originals stay as the training record.
+
+This also corrects an earlier claim in this spec: the YuNet/SFace face models
+are **not** gitignored; they are LFS-tracked and already committed, so
+`install.sh` needs `git lfs pull`, not `fetch_face_models.py`.
+
 ### 1. `app/server.py` — serve the UI
 
 Mount the bundle after every `include_router` call, so `/api/*` and `/ws` keep
@@ -100,8 +118,10 @@ DEFAULT_BACKEND = "openvino" if platform.machine() in ("AMD64", "x86_64") else "
 
 Generalise `_load()`'s export-cache path from the OpenVINO-specific
 `f"{stem}_{imgsz}_openvino_model"` to `f"{stem}_{imgsz}_{backend}_model"`, so
-NCNN exports cache on first use the same way OpenVINO ones do. The committed
-`yolov8n-pose_{448,512,640}_openvino_model` directories stay valid on Windows.
+NCNN exports cache on first use the same way OpenVINO ones do. The existing
+`yolov8n-pose_{448,512,640}_openvino_model` directories stay valid on Windows
+(they are local-only — `.gitignore` excludes `*_openvino_model/`, and exports
+regenerate from the `.pt` weights on demand).
 
 Per-model settings on the Pi, following `START.md`'s own measurements:
 `landed` at imgsz 640 (START.md records 18.3 ms vs 54.9 ms at 1280, still
@@ -141,10 +161,9 @@ Windows.
 New directory in `setup/`:
 
 - `aerosense.service`, `kiosk.service` — unit files (mongod's ships with Mongo)
-- `install.sh` — create venv, install deps (apt-first for OpenCV), run
-  `python fetch_face_models.py` for the gitignored YuNet/SFace weights, warm the
-  NCNN exports so first launch is not a multi-minute stall, install and enable
-  the units
+- `install.sh` — create venv, install deps (apt-first for OpenCV), `git lfs pull`
+  the model weights and face ONNX models, warm the NCNN exports so first launch
+  is not a multi-minute stall, install and enable the units
 - `PI-SETUP.md` — Pi OS 64-bit install, Mongo apt repo, Wi-Fi onto the same LAN
   as the ESP32-CAM, and the per-camera `by-id` mapping for front/left/right/back
 

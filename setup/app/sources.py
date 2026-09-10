@@ -78,9 +78,13 @@ def set_source(camera_id: str, kind: str, path: str | None = None,
             raise ValueError(f"no such video file: {path!r}")
         src = {"kind": "file", "path": os.path.abspath(path)}
     elif kind == "device":
-        if index is None:
-            raise ValueError("device source needs an index")
-        src = {"kind": "device", "index": int(index)}
+        # A device is addressed either by capture index (Windows) or by a
+        # stable /dev/v4l/by-id path (Linux, where udev reorders indices
+        # across reboots).
+        if index is None and not path:
+            raise ValueError("device source needs an index or path")
+        src = ({"kind": "device", "path": path} if path
+               else {"kind": "device", "index": int(index)})
     else:
         raise ValueError(f"unknown source kind {kind!r}")
     if label:
@@ -100,6 +104,9 @@ def describe(camera_id: str) -> dict:
     if src["kind"] == "file":
         return {**src, "name": os.path.basename(src["path"]),
                 "available": os.path.exists(src["path"])}
+    if "path" in src:
+        return {**src, "name": os.path.basename(src["path"]),
+                "available": os.path.exists(src["path"])}
     return {**src, "name": f"device {src['index']}", "available": True}
 
 
@@ -107,6 +114,8 @@ def open_capture(camera_id: str) -> cv2.VideoCapture:
     """Open a slot's source. The one seam between files and real cameras."""
     src = get(camera_id)
     if src["kind"] == "device":
+        if "path" in src:
+            return cv2.VideoCapture(src["path"])
         # DirectShow: MSMF takes ~10 s to open the built-in camera on this
         # laptop, and enumerates USB devices in a different order, so an index
         # that works under one backend can point elsewhere under the other.

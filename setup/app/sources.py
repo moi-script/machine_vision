@@ -23,6 +23,12 @@ from app import db
 
 CAMERA_IDS = ("front", "left", "right", "back")
 
+# Keys that identify *which* physical source a slot points at. Exactly one
+# combination of these is live at a time (a path xor an index); the other
+# must be cleared on write or a stale one left by a previous $set can hijack
+# open_capture()'s precedence check.
+_IDENTITY = ("path", "index")
+
 _VID_DIR = os.path.join(os.path.dirname(__file__), "..", "datasets", "vid_source")
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "..", "datasets", "uploads")
 
@@ -93,7 +99,11 @@ def set_source(camera_id: str, kind: str, path: str | None = None,
     with _lock:
         _cache[camera_id] = dict(src)
     try:
-        _col().update_one({"_id": camera_id}, {"$set": src}, upsert=True)
+        stale = {k: "" for k in _IDENTITY if k not in src}
+        update = {"$set": src}
+        if stale:
+            update["$unset"] = stale
+        _col().update_one({"_id": camera_id}, update, upsert=True)
     except Exception:
         pass
     return src
@@ -114,14 +124,21 @@ def open_capture(camera_id: str) -> cv2.VideoCapture:
     """Open a slot's source. The one seam between files and real cameras."""
     src = get(camera_id)
     if src["kind"] == "device":
-        if "path" in src:
-            return cv2.VideoCapture(src["path"])
-        # DirectShow: MSMF takes ~10 s to open the built-in camera on this
-        # laptop, and enumerates USB devices in a different order, so an index
-        # that works under one backend can point elsewhere under the other.
-        if sys.platform == "win32":
-            return cv2.VideoCapture(src["index"], cv2.CAP_DSHOW)
-        return cv2.VideoCapture(src["index"])
+        # index takes precedence over path: set_source() unsets whichever
+        # identity key it isn't setting, so a doc should never carry both,
+        # but if a stale one ever lingers (an old doc written before that
+        # guard existed, a manual edit), the explicit index an operator
+        # just picked must win over a leftover path rather than silently
+        # keep playing whatever the path pointed at.
+        if "index" in src:
+            # DirectShow: MSMF takes ~10 s to open the built-in camera on
+            # this laptop, and enumerates USB devices in a different order,
+            # so an index that works under one backend can point elsewhere
+            # under the other.
+            if sys.platform == "win32":
+                return cv2.VideoCapture(src["index"], cv2.CAP_DSHOW)
+            return cv2.VideoCapture(src["index"])
+        return cv2.VideoCapture(src["path"])
     if not os.path.exists(src["path"]):
         raise FileNotFoundError(src["path"])
     return cv2.VideoCapture(src["path"])

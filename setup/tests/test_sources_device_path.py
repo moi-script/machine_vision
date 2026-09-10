@@ -15,21 +15,28 @@ class _NoDB:
 
     set_source() upserts into the real aerosense database, which holds the
     operator's live camera assignments. These tests must never write there.
+    Records update_one calls so tests can assert on the $set/$unset shape
+    without ever touching Mongo.
     """
+
+    def __init__(self):
+        self.calls = []
 
     def find_one(self, *a, **k):
         return None
 
     def update_one(self, *a, **k):
+        self.calls.append((a, k))
         return None
 
 
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch):
-    monkeypatch.setattr(sources, "_col", lambda: _NoDB())
+    db = _NoDB()
+    monkeypatch.setattr(sources, "_col", lambda: db)
     with sources._lock:
         sources._cache.clear()
-    yield
+    yield db
     with sources._lock:
         sources._cache.clear()
 
@@ -90,3 +97,65 @@ def test_open_capture_passes_the_path_to_opencv(monkeypatch):
     sources.set_source("front", "device", path=BY_ID)
     sources.open_capture("front")
     assert seen["arg"] == BY_ID
+
+
+def _last_update(db):
+    """The $set/$unset document from the most recent update_one call."""
+    args, _kwargs = db.calls[-1]
+    return args[1]
+
+
+def test_switching_path_to_index_unsets_the_stale_path(_isolate):
+    sources.set_source("front", "device", path=BY_ID)
+    sources.set_source("front", "device", index=1)
+    update = _last_update(_isolate)
+    assert update["$set"] == {"kind": "device", "index": 1}
+    assert update["$unset"] == {"path": ""}
+
+
+def test_switching_index_to_path_unsets_the_stale_index(_isolate):
+    sources.set_source("front", "device", index=1)
+    sources.set_source("front", "device", path=BY_ID)
+    update = _last_update(_isolate)
+    assert update["$set"] == {"kind": "device", "path": BY_ID}
+    assert update["$unset"] == {"index": ""}
+
+
+def test_open_capture_prefers_index_when_a_stale_path_lingers(monkeypatch):
+    """Regression test for the bug itself.
+
+    Before the fix, set_source()'s $set-only write let a leftover `path`
+    key from an earlier file/path source survive alongside a newly set
+    `index`. open_capture()'s `if "path" in src` check then opened the
+    stale path instead of the camera the operator just picked. Simulate
+    that doc shape directly in the cache (set_source() itself must no
+    longer be able to produce it) and confirm the index wins.
+    """
+    with sources._lock:
+        sources._cache["front"] = {
+            "kind": "device", "path": BY_ID, "index": 1,
+        }
+    seen = {}
+
+    class FakeCap:
+        def set(self, *a):
+            return True
+
+    def fake_videocapture(arg, *rest):
+        seen["arg"] = arg
+        return FakeCap()
+
+    monkeypatch.setattr(sources.cv2, "VideoCapture", fake_videocapture)
+    sources.open_capture("front")
+    assert seen["arg"] == 1
+
+
+def test_label_survives_an_identity_change(_isolate):
+    sources.set_source("front", "device", index=1, label="court cam")
+    sources.set_source("front", "device", path=BY_ID, label="court cam")
+    update = _last_update(_isolate)
+    assert update["$set"] == {
+        "kind": "device", "path": BY_ID, "label": "court cam",
+    }
+    assert update["$unset"] == {"index": ""}
+    assert "label" not in update.get("$unset", {})

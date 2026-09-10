@@ -55,6 +55,21 @@ async def capture_snapshot(use_flash: bool = True) -> bytes:
     return resp.content
 
 
+def stream_url() -> str | None:
+    """URL of the board's live MJPEG preview, or None if no IP is configured.
+
+    The browser points an <img> straight at this, so it is the one piece of
+    ESP32 addressing that has to leave the backend. Built from the same
+    ESP32_CAM_IP the capture path uses, so the preview can never drift onto a
+    stale address while captures work (or vice versa).
+    """
+    ip = getattr(_settings, "ESP32_CAM_IP", None)
+    if not ip:
+        return None
+    port = getattr(_settings, "ESP32_CAM_STREAM_PORT", 81)
+    return f"http://{ip}:{port}/stream"
+
+
 async def check_health() -> bool:
     """Quick connectivity check — used by a control.py debug endpoint."""
     ip = getattr(_settings, "ESP32_CAM_IP", None)

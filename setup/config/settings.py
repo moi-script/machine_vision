@@ -152,5 +152,8 @@ SKILL_TIERS = [
 
 
 
-ESP32_CAM_IP: str = "10.223.180.12"
+ESP32_CAM_IP: str = "10.200.33.50"
 ESP32_CAM_TIMEOUT_S: float = 5.0
+# Live preview feed runs on its own server on the board — see the sketch's
+# startStreamServer(). Must match STREAM_PORT in esp_camera_face_detection.ino.
+ESP32_CAM_STREAM_PORT: int = 81

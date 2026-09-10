@@ -45,17 +45,17 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODELS: dict[str, dict] = {
     "none": {},
     "shuttle": {
-        "weights": "runs/clear_badminton/p2-native/weights/best.pt",
+        "weights": "models/shuttle_clear_badminton_p2.pt",
         "imgsz": 1280, "task": "detect", "conf": 0.25, "max_side": 60,
         "label": "flying shuttle",
     },
     "landed": {
-        "weights": "runs/shuttle_lines/stock-n/weights/best.pt",
+        "weights": "models/shuttle_lines_stock_n.pt",
         "imgsz": 1280, "task": "detect", "conf": 0.40, "max_side": 90,
         "label": "landed shuttle",
     },
     "pose": {
-        "weights": "yolov8n-pose.pt",
+        "weights": "models/yolov8n-pose.pt",
         "imgsz": 640, "task": "pose", "conf": 0.25,
         # Lower-middle of the frame: the near court. Excludes the ceiling and
         # the spectator tables along the top, which is where the extra people

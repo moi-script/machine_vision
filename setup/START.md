@@ -6,9 +6,9 @@ Everything here runs from `C:\thesis\setup`.
 
 | Purpose | Weights | imgsz | conf | max_side | Trained |
 |---|---|---|---|---|---|
-| Flying shuttle (court) | `runs/clear_badminton/p2-native/weights/best.pt` | 1280 | 0.25 | 60 | 2026-09-02 |
-| Landed shuttle (lines) | `runs/shuttle_lines/stock-n/weights/best.pt` | 1280 | 0.40 | 90 | 2026-09-02 |
-| Player pose | `yolov8n-pose.pt` (stock COCO, never fine-tuned) | 640 | 0.25 | — | — |
+| Flying shuttle (court) | `models/shuttle_clear_badminton_p2.pt` | 1280 | 0.25 | 60 | 2026-09-02 |
+| Landed shuttle (lines) | `models/shuttle_lines_stock_n.pt` | 1280 | 0.40 | 90 | 2026-09-02 |
+| Player pose | `models/yolov8n-pose.pt` (stock COCO, never fine-tuned) | 640 | 0.25 | — | — |
 
 All three are registered in `app/pipeline.py` (the `MODELS` dict) under the keys
 `shuttle`, `landed` and `pose`. The imgsz/conf above are what `pipeline.py` sets.
@@ -42,6 +42,11 @@ model and will not know it.
 and to the clear_badminton dataset videos; they need no override.
 
 Only `app/pipeline.py` points at the new weights by default.
+
+The `models/` copies are the ones `app/pipeline.py` loads and the only ones
+that reach the Raspberry Pi (`runs/` is gitignored; `setup/models/*.pt` is
+Git LFS tracked). The `runs/` originals remain the training record and are
+still what `scripts/feeder_court/*.py` default to.
 
 ## Dataset videos
 

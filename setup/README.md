@@ -343,3 +343,16 @@ When you get your Pi:
 2. Change `CAMERA_INDEX` if needed
 3. Wire feeder to GPIO → uncomment GPIO code in `fire_feeder()`
 4. Run exactly the same — no other changes needed
+
+---
+
+## Updating the Pi
+
+The Pi runs the committed UI bundle, not a dev server. To ship a UI change:
+
+    pwsh scripts/build_ui.ps1      # rebuild + stage app/static/ui
+    git add setup/app/static/ui && git commit
+    # then on the Pi:
+    git pull && git lfs pull && sudo systemctl restart aerosense
+
+A UI change that skips `build_ui.ps1` is not shipped, however green the tests are.

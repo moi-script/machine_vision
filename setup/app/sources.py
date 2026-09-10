@@ -20,6 +20,7 @@ import threading
 import cv2
 
 from app import db
+from config import settings as _settings
 
 CAMERA_IDS = ("front", "left", "right", "back")
 
@@ -120,6 +121,23 @@ def describe(camera_id: str) -> dict:
     return {**src, "name": f"device {src['index']}", "available": True}
 
 
+def _configure_v4l2(cap: "cv2.VideoCapture") -> "cv2.VideoCapture":
+    """Ask a V4L2 camera for MJPG at the configured resolution.
+
+    Four uncompressed 1280x800 streams exceed the Pi 5's shared USB3
+    bandwidth and the later cameras simply fail to open. MJPG moves the
+    decode cost onto the CPU, which is the cheaper of the two problems.
+
+    Best-effort: a camera that refuses a mode keeps its default, and the
+    frame size the pipeline sees comes from the frame itself, never from
+    these values.
+    """
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, _settings.FRAME_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, _settings.FRAME_HEIGHT)
+    return cap
+
+
 def open_capture(camera_id: str) -> cv2.VideoCapture:
     """Open a slot's source. The one seam between files and real cameras."""
     src = get(camera_id)
@@ -137,8 +155,8 @@ def open_capture(camera_id: str) -> cv2.VideoCapture:
             # under the other.
             if sys.platform == "win32":
                 return cv2.VideoCapture(src["index"], cv2.CAP_DSHOW)
-            return cv2.VideoCapture(src["index"])
-        return cv2.VideoCapture(src["path"])
+            return _configure_v4l2(cv2.VideoCapture(src["index"]))
+        return _configure_v4l2(cv2.VideoCapture(src["path"]))
     if not os.path.exists(src["path"]):
         raise FileNotFoundError(src["path"])
     return cv2.VideoCapture(src["path"])
@@ -148,20 +166,44 @@ def is_file(camera_id: str) -> bool:
     return get(camera_id)["kind"] == "file"
 
 
+BY_ID_DIR = "/dev/v4l/by-id"
+
+
+def _probe(arg) -> tuple[int, int] | None:
+    """Open a source just long enough to learn its frame size."""
+    cap = cv2.VideoCapture(arg, cv2.CAP_DSHOW) if sys.platform == "win32" \
+        else cv2.VideoCapture(arg)
+    try:
+        if not cap.isOpened():
+            return None
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            return None
+        return frame.shape[1], frame.shape[0]
+    finally:
+        cap.release()
+
+
 def list_devices(max_index: int = 4) -> list[dict]:
-    """Probe capture indices. Slow-ish, so the UI should call it on demand."""
+    """Probe capture sources. Slow-ish, so the UI should call it on demand.
+
+    On Linux, prefer the /dev/v4l/by-id symlinks: udev reorders the integer
+    indices across reboots, so an index stored in Mongo can point at a
+    different physical camera after a power cycle.
+    """
     found = []
+    if sys.platform != "win32" and os.path.isdir(BY_ID_DIR):
+        for name in sorted(os.listdir(BY_ID_DIR)):
+            path = f"{BY_ID_DIR}/{name}"
+            size = _probe(path)
+            if size:
+                found.append({"path": path, "name": name,
+                              "width": size[0], "height": size[1]})
+        return found
     for i in range(max_index):
-        cap = cv2.VideoCapture(i, cv2.CAP_DSHOW) if sys.platform == "win32" \
-            else cv2.VideoCapture(i)
-        try:
-            if cap.isOpened():
-                ok, frame = cap.read()
-                if ok and frame is not None:
-                    found.append({"index": i, "width": frame.shape[1],
-                                  "height": frame.shape[0]})
-        finally:
-            cap.release()
+        size = _probe(i)
+        if size:
+            found.append({"index": i, "width": size[0], "height": size[1]})
     return found
 
 

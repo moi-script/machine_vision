@@ -50,3 +50,13 @@ async def ws_endpoint(ws: WebSocket):
             await ws.receive_text()  # keep-alive; ignore client messages
     except WebSocketDisconnect:
         hub.disconnect(ws)
+
+
+# Serve the built UI last: a mount at / claims every unclaimed path, so this
+# must come after every route registration above - routers *and* the
+# decorated routes declared directly in this file (health, startup, ws).
+# No-op when the bundle is absent (dev flow).
+from app.ui_static import mount_ui  # noqa: E402
+
+_ui_mounted = mount_ui(app)
+print(f"[UI] bundle {'mounted at /' if _ui_mounted else 'absent - API only'}", flush=True)

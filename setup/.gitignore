@@ -36,3 +36,10 @@ venv/
 # The built UI bundle IS committed on purpose: it is how the Raspberry Pi gets
 # the frontend without a Node toolchain. Regenerate it only with
 # scripts/build_ui.ps1 - never hand-edit app/static/ui.
+
+# PyInstaller output. The Windows bundle is ~1.5 GB - far over GitHub's 100 MB
+# per-file limit - so it is published as a Release asset, never committed.
+# scripts/aerosense.spec IS committed; it is the recipe, not the output.
+/dist/
+/build/
+*.zip

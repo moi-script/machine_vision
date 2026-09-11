@@ -33,9 +33,19 @@ from that session automatically — nothing in this repo has to guess them.)
 
     sudo apt-get install -y git git-lfs
     sudo mkdir -p /opt/aerosense && sudo chown aerosense /opt/aerosense
-    git clone <your remote> /opt/aerosense
+    sudo -u aerosense git clone https://github.com/moi-script/machine_vision.git /opt/aerosense
     cd /opt/aerosense/setup
     sudo ./deploy/install.sh
+
+Clone as the `aerosense` user rather than as root: `install.sh` later runs
+`git lfs pull` as that user, and git refuses to work on a repository owned by
+someone else ("detected dubious ownership") — which reads like a git bug
+rather than the permissions mistake it is.
+
+Install `git-lfs` before cloning, as the apt line above does. The model
+weights are LFS objects (~20 MB) and a clone without LFS silently produces
+130-byte pointer files instead; `install.sh` re-runs `git lfs pull` and
+refuses to continue if any weight is still a pointer.
 
 `aerosense.service` and the kiosk autostart entry in git both default to
 `/opt/aerosense/setup`. `install.sh` substitutes the actual checkout path

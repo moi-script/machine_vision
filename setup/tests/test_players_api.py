@@ -21,12 +21,29 @@ def test_create_and_list_player():
     assert pid in ids
 
 
-def test_patch_and_soft_delete():
+def test_patch_and_hard_delete():
+    """DELETE removes the player outright.
+
+    It used to be a soft deactivate; c69076e made it a hard delete because
+    PATCH {"isActive": false} already covered deactivating. This test was
+    left asserting the old behaviour and had been failing ever since.
+    """
     pid = client.post("/api/players", json={"name": "APITEST"}).json()["id"]
     client.patch(f"/api/players/{pid}", json={"age": 30})
     assert client.get(f"/api/players/{pid}").json()["age"] == 30
-    client.delete(f"/api/players/{pid}")
-    assert client.get(f"/api/players/{pid}").json()["isActive"] is False
+
+    assert client.delete(f"/api/players/{pid}").json() == {"ok": True}
+    assert client.get(f"/api/players/{pid}").status_code == 404
+
+
+def test_patch_can_deactivate_without_deleting():
+    """Soft deactivation lost its coverage when DELETE changed meaning."""
+    pid = client.post("/api/players", json={"name": "APITEST"}).json()["id"]
+    client.patch(f"/api/players/{pid}", json={"isActive": False})
+
+    got = client.get(f"/api/players/{pid}")
+    assert got.status_code == 200
+    assert got.json()["isActive"] is False
 
 
 def test_skill_endpoint_returns_unranked_for_fresh_player():

@@ -76,13 +76,24 @@ def _resolve(rel: str) -> str:
     return rel if os.path.isabs(rel) else os.path.join(_ROOT, rel)
 
 
-def model_catalog() -> list[dict]:
+def model_catalog(backend: str | None = None) -> list[dict]:
+    """Models available to run, with the imgsz that will actually be used.
+
+    `backend` defaults to DEFAULT_BACKEND (the backend resolved for this
+    machine) and applies the exact same PI_IMGSZ override condition
+    Worker.__init__ uses, so the reported imgsz cannot drift from what
+    actually runs.
+    """
+    backend = backend or DEFAULT_BACKEND
     out = []
     for key, cfg in MODELS.items():
         if key == "none":
             out.append({"key": "none", "label": "no model", "available": True})
             continue
-        out.append({"key": key, "label": cfg["label"], "imgsz": cfg["imgsz"],
+        imgsz = cfg["imgsz"]
+        if backend == "ncnn" and key in settings.PI_IMGSZ:
+            imgsz = settings.PI_IMGSZ[key]
+        out.append({"key": key, "label": cfg["label"], "imgsz": imgsz,
                     "available": os.path.exists(_resolve(cfg["weights"]))})
     return out
 

@@ -37,8 +37,10 @@ from that session automatically — nothing in this repo has to guess them.)
     cd /opt/aerosense/setup
     sudo ./deploy/install.sh
 
-`/opt/aerosense` is baked into `aerosense.service`'s `WorkingDirectory`. To put
-it elsewhere, edit that unit file.
+`aerosense.service` and the kiosk autostart entry in git both default to
+`/opt/aerosense/setup`. `install.sh` substitutes the actual checkout path
+into both at install time, so cloning somewhere else works with no manual
+unit-file edits — just clone there and run `install.sh` from that checkout.
 
 `install.sh` also detects whether this image's browser binary is
 `/usr/bin/chromium-browser` or `/usr/bin/chromium` and writes the kiosk
@@ -63,6 +65,12 @@ Only fill this in if you deliberately switch `SHUTTLE_SOURCE` to
 no way to fill it in for you, which is why it is left empty.
 
 ## 4. Assign the four cameras
+
+`datasets/` is gitignored, so on a fresh Pi checkout it does not exist: none
+of the four slots' bundled fallback video paths are there, and the Cameras
+page's "bundled" list is empty. That's the expected first-boot state, not a
+fault — nothing crashes, all four slots just show as unavailable until you
+assign real cameras below.
 
 Unlike Windows, capture indices are not stable across reboots here, so sources
 are stored as `/dev/v4l/by-id/...` paths instead. List what is attached:

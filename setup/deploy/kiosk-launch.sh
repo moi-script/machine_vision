@@ -52,7 +52,7 @@ elapsed=$(( $(date +%s) - start ))
 
 while true; do
   "$BIN" \
-    --app=http://localhost:8000 \
+    --app=http://127.0.0.1:8000 \
     --start-fullscreen \
     --kiosk \
     --noerrdialogs \

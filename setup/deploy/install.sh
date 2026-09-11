@@ -162,7 +162,15 @@ PY
 
 # ── aerosense backend systemd unit ──────────────────────────
 log "installing the aerosense systemd unit"
-install -m644 "$ROOT/deploy/aerosense.service" /etc/systemd/system/
+# aerosense.service in git hardcodes /opt/aerosense/setup, both in
+# WorkingDirectory and in ExecStart's venv path, as its documented default
+# layout. Substitute the actual checkout root so a relocated clone (PI-SETUP
+# says relocation is fine - just edit this unit) gets a unit that matches
+# where it actually lives, instead of one pointing at a path that doesn't
+# exist.
+sed "s|/opt/aerosense/setup|$ROOT|g" "$ROOT/deploy/aerosense.service" \
+  > /etc/systemd/system/aerosense.service
+chmod 644 /etc/systemd/system/aerosense.service
 systemctl daemon-reload
 systemctl enable aerosense.service
 systemctl restart aerosense.service
@@ -187,9 +195,14 @@ RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 [ -n "$RUN_HOME" ] && [ -d "$RUN_HOME" ] || die "no home directory for $RUN_USER"
 chmod 755 "$ROOT/deploy/kiosk-launch.sh"
 sudo -u "$RUN_USER" mkdir -p "$RUN_HOME/.config/autostart"
-# kiosk.desktop in git keeps chromium-browser as its documented default;
-# substitute in whichever binary this image actually has.
-sed "s|^Exec=/opt/aerosense/setup/deploy/kiosk-launch.sh /usr/bin/chromium-browser|Exec=/opt/aerosense/setup/deploy/kiosk-launch.sh $KIOSK_BIN|" \
+# kiosk.desktop in git keeps /opt/aerosense/setup and chromium-browser as its
+# documented defaults. Rewrite the whole Exec= line from $ROOT and
+# $KIOSK_BIN rather than matching its current value - matching the old value
+# only works when the checkout is still at /opt/aerosense; a relocated
+# checkout (PI-SETUP says relocation is fine) would then pass through
+# unmatched and point Exec= at a kiosk-launch.sh that doesn't exist, failing
+# silently with no diagnostic at all.
+sed "s|^Exec=.*|Exec=$ROOT/deploy/kiosk-launch.sh $KIOSK_BIN|" \
   "$ROOT/deploy/kiosk.desktop" > "$RUN_HOME/.config/autostart/kiosk.desktop"
 chown "$RUN_USER:$RUN_USER" "$RUN_HOME/.config/autostart/kiosk.desktop"
 chmod 644 "$RUN_HOME/.config/autostart/kiosk.desktop"

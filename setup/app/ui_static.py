@@ -4,8 +4,13 @@ The bundle is built on the Windows dev machine (scripts/build_ui.ps1) and
 committed to app/static/ui, so the Raspberry Pi needs no Node toolchain.
 
 WHY THE DIRECTORY IS OPTIONAL
-During development the UI is served by Vite on :5173 and no bundle exists.
-mount_ui() is a no-op then, and the API behaves exactly as it always has.
+The bundle is committed, so a fresh clone already serves it at :8000/ - a
+maintainer running the Windows dev workflow instead points a Vite dev server
+at :5173 against this same API, and the two paths can disagree if the
+committed bundle has gone stale relative to app/routers changes. mount_ui()
+only becomes a no-op if app/static/ui is missing entirely (e.g. deleted, or
+never checked out), in which case the API still behaves exactly as it always
+has.
 """
 from pathlib import Path
 

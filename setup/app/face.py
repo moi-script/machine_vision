@@ -1,8 +1,9 @@
 """Face detection + recognition via OpenCV YuNet (detect) and SFace (embed).
 
-Models live in setup/models/ (gitignored); fetch with fetch_face_models.py.
-Everything is guarded so a missing model never crashes callers — recognition
-simply stays unavailable."""
+Models live in setup/models/ and are committed via Git LFS (`git lfs pull`
+fetches them; deploy/install.sh hard-fails at provisioning time if they are
+missing or still unfetched LFS pointers). Everything here is guarded so a
+missing model never crashes callers — recognition simply stays unavailable."""
 from __future__ import annotations
 import base64
 import os

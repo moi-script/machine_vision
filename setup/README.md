@@ -356,3 +356,45 @@ The Pi runs the committed UI bundle, not a dev server. To ship a UI change:
     git pull && git lfs pull && sudo systemctl restart aerosense
 
 A UI change that skips `build_ui.ps1` is not shipped, however green the tests are.
+
+## Running AeroSense as a Windows app
+
+The same bundle the Pi serves is an installable PWA, so on Windows you get an
+app window, a Start-menu entry and a taskbar icon without Electron.
+
+**One-click launch (recommended).** Create the shortcuts once:
+
+    powershell -ExecutionPolicy Bypass -File scripts\install-windows-shortcut.ps1
+
+That puts an **AeroSense** shortcut on the Desktop and in the Start menu. It
+runs `scripts\start-aerosense.bat`, which starts the backend if it is not
+already answering, waits for `/api/health`, and then opens the app window.
+
+The launcher probes the API rather than just checking whether port 8000 is
+occupied — another service on that port would otherwise be mistaken for
+AeroSense and the window would open onto it. If it reports the port is held by
+something else, find the culprit with:
+
+    netstat -ano | findstr :8000
+    tasklist /fi "pid eq <PID from the last column>"
+
+**Installing it in Chrome.** With the server running, open
+<http://localhost:8000> and use the install button in the address bar
+(or ⋮ → Cast, save and share → Install page as app). Chrome then treats
+AeroSense as its own app: separate window, no browser chrome, pinnable to the
+taskbar. Uninstall via `chrome://apps`.
+
+Two limits worth knowing:
+
+- Chrome only offers to install from a **secure context**. `localhost` counts,
+  so the machine running the server can install it — a phone on the same wifi
+  at `http://<your-ip>:8000` cannot, because that would need HTTPS.
+- The installed app is only a window onto `localhost:8000`; it cannot start
+  Python. Launch it from the shortcut above, or start the server yourself
+  first, otherwise the window opens on a connection error.
+
+The PWA files live in the UI repo's `public/` (`manifest.webmanifest`,
+`sw.js`, `icon-*.png`) and reach the backend through `scripts/build_ui.ps1`
+like the rest of the bundle. `app/ui_static.py` registers the
+`.webmanifest` MIME type — without it Chrome ignores the manifest and simply
+never offers to install, with nothing logged to explain why.

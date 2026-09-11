@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 240" fill="none">
+  <defs>
+    <radialGradient id="m-feather" cx="50%" cy="30%" r="75%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="55%" stop-color="#eef1f6" />
+      <stop offset="100%" stop-color="#c3c9d6" />
+    </radialGradient>
+    <radialGradient id="m-cork" cx="42%" cy="30%" r="80%">
+      <stop offset="0%" stop-color="#ffb266" />
+      <stop offset="55%" stop-color="#ff7a00" />
+      <stop offset="100%" stop-color="#c85a00" />
+    </radialGradient>
+    <filter id="m-soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="4" />
+    </filter>
+  </defs>
+
+  <!-- feather skirt - fanned petals (the on-page ground shadow is omitted:
+       a blurred black ellipse adds nothing on a dark icon ground) -->
+  <g transform="rotate(-46 100 168)"><path d="M100 168 C86 120 90 66 100 40 C110 66 114 120 100 168 Z" fill="url(#m-feather)" stroke="#aeb6c6" stroke-width="1.5" stroke-opacity="0.5"/></g>
+  <g transform="rotate(-30 100 168)"><path d="M100 168 C86 120 90 66 100 40 C110 66 114 120 100 168 Z" fill="url(#m-feather)" stroke="#aeb6c6" stroke-width="1.5" stroke-opacity="0.5"/></g>
+  <g transform="rotate(-15 100 168)"><path d="M100 168 C86 120 90 66 100 40 C110 66 114 120 100 168 Z" fill="url(#m-feather)" stroke="#aeb6c6" stroke-width="1.5" stroke-opacity="0.5"/></g>
+  <g transform="rotate(0 100 168)"><path d="M100 168 C86 120 90 66 100 40 C110 66 114 120 100 168 Z" fill="url(#m-feather)" stroke="#aeb6c6" stroke-width="1.5" stroke-opacity="0.5"/></g>
+  <g transform="rotate(15 100 168)"><path d="M100 168 C86 120 90 66 100 40 C110 66 114 120 100 168 Z" fill="url(#m-feather)" stroke="#aeb6c6" stroke-width="1.5" stroke-opacity="0.5"/></g>
+  <g transform="rotate(30 100 168)"><path d="M100 168 C86 120 90 66 100 40 C110 66 114 120 100 168 Z" fill="url(#m-feather)" stroke="#aeb6c6" stroke-width="1.5" stroke-opacity="0.5"/></g>
+  <g transform="rotate(46 100 168)"><path d="M100 168 C86 120 90 66 100 40 C110 66 114 120 100 168 Z" fill="url(#m-feather)" stroke="#aeb6c6" stroke-width="1.5" stroke-opacity="0.5"/></g>
+
+  <!-- soft inner shade seating the feathers into the cork -->
+  <ellipse cx="100" cy="162" rx="46" ry="16" fill="#9aa2b3" opacity="0.25" filter="url(#m-soft)" />
+
+  <!-- cork base - rounded dome -->
+  <path d="M68 170 Q68 210 100 214 Q132 210 132 170 Q132 158 100 156 Q68 158 68 170 Z" fill="url(#m-cork)" />
+  <ellipse cx="90" cy="168" rx="20" ry="9" fill="#ffffff" opacity="0.28" filter="url(#m-soft)" />
+</svg>

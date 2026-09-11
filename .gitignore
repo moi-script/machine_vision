@@ -1,3 +1,6 @@
 
 # SDD scratch workspace
 .superpowers/
+
+# Isolated worktrees (git-ignored scratch; see superpowers:using-git-worktrees)
+.worktrees/

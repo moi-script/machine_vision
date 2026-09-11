@@ -11,8 +11,18 @@ from config.settings import (
 )
 
 # ── Homography (image pixels <-> top-down court space) ───────
-_H = None       # pixel -> court
-_H_inv = None   # court -> pixel
+#
+# One entry per camera. The rig grew from a single camera to a front/left/right/
+# back set, and each position sees the court from its own angle, so each needs
+# its own transform. A single module-level pair would make the last camera
+# calibrated silently overwrite every other camera's geometry.
+#
+# DEFAULT_CAMERA keeps every existing caller working unchanged: to_court(pt)
+# still means "the one camera" until a caller starts naming one.
+DEFAULT_CAMERA = "front"
+
+_H: dict[str, np.ndarray] = {}       # camera_id -> pixel -> court
+_H_inv: dict[str, np.ndarray] = {}   # camera_id -> court -> pixel
 
 
 def _canonical_rect():
@@ -22,13 +32,16 @@ def _canonical_rect():
     )
 
 
-def build_homography(corners=None):
+def build_homography(corners=None, camera_id: str = DEFAULT_CAMERA):
     """
     Build (and cache) the pixel->court homography from 4 court corners in
     order [net_left, net_right, baseline_right, baseline_left]. Falls back to
     settings.COURT_CORNERS. Raises ValueError if unset or degenerate.
+
+    Cached per `camera_id`; a failed build leaves that camera's previous
+    homography in place rather than half-updating it, so a rejected
+    calibration cannot take a running drill's geometry down with it.
     """
-    global _H, _H_inv
     corners = corners if corners is not None else COURT_CORNERS
     if not corners or len(corners) != 4:
         raise ValueError(
@@ -36,33 +49,57 @@ def build_homography(corners=None):
         )
     src = np.array(corners, dtype=np.float32)
     try:
-        _H = cv2.getPerspectiveTransform(src, _canonical_rect())
-        _H_inv = np.linalg.inv(_H)
+        H = cv2.getPerspectiveTransform(src, _canonical_rect())
+        H_inv = np.linalg.inv(H)
     except (cv2.error, np.linalg.LinAlgError) as exc:
         raise ValueError(
             f"Court corners look degenerate — re-run calibration. ({exc})"
         )
-    return _H
+    _H[camera_id] = H
+    _H_inv[camera_id] = H_inv
+    return H
 
 
-def _ensure_homography():
-    if _H is None:
-        build_homography()
+def _ensure_homography(camera_id: str = DEFAULT_CAMERA):
+    if camera_id not in _H:
+        # Only the default camera can fall back to config; naming an
+        # uncalibrated camera is a caller error, not something to paper over
+        # with another camera's geometry.
+        if camera_id != DEFAULT_CAMERA:
+            raise ValueError(
+                f"camera {camera_id!r} has no homography — calibrate it first."
+            )
+        build_homography(camera_id=camera_id)
 
 
-def to_court(pt):
+def clear_homography(camera_id: str | None = None) -> None:
+    """Forget one camera's homography, or all of them when camera_id is None."""
+    if camera_id is None:
+        _H.clear()
+        _H_inv.clear()
+        return
+    _H.pop(camera_id, None)
+    _H_inv.pop(camera_id, None)
+
+
+def calibrated_cameras() -> list[str]:
+    """Camera ids that currently hold a homography."""
+    return sorted(_H)
+
+
+def to_court(pt, camera_id: str = DEFAULT_CAMERA):
     """Pixel (x, y) -> court (cx, cy)."""
-    _ensure_homography()
+    _ensure_homography(camera_id)
     p = np.array([[[float(pt[0]), float(pt[1])]]], dtype=np.float32)
-    c = cv2.perspectiveTransform(p, _H)[0][0]
+    c = cv2.perspectiveTransform(p, _H[camera_id])[0][0]
     return float(c[0]), float(c[1])
 
 
-def court_to_pixel(pt):
+def court_to_pixel(pt, camera_id: str = DEFAULT_CAMERA):
     """Court (cx, cy) -> pixel (x, y). For drawing overlays."""
-    _ensure_homography()
+    _ensure_homography(camera_id)
     p = np.array([[[float(pt[0]), float(pt[1])]]], dtype=np.float32)
-    c = cv2.perspectiveTransform(p, _H_inv)[0][0]
+    c = cv2.perspectiveTransform(p, _H_inv[camera_id])[0][0]
     return float(c[0]), float(c[1])
 
 

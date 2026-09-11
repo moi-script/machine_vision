@@ -74,6 +74,11 @@ def settings_col() -> Collection:
     return get_db()["settings"]
 
 
+def calibrations() -> Collection:
+    """One doc per camera id (front/left/right/back), plus history entries."""
+    return get_db()["calibrations"]
+
+
 def list_docs(col: Collection) -> list[dict]:
     """Return all docs with Mongo `_id` surfaced as a string `id`.
 

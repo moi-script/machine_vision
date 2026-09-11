@@ -23,7 +23,12 @@ from fastapi import APIRouter, HTTPException
 import numpy as np
 
 from app import db, face
-from app.esp32_camera_client import capture_snapshot, check_health, ESP32CaptureError
+from app.esp32_camera_client import (
+    capture_snapshot,
+    check_health,
+    stream_url,
+    ESP32CaptureError,
+)
 
 router = APIRouter(prefix="/api/esp32", tags=["esp32-enrollment"])
 
@@ -54,11 +59,15 @@ def _average_embedding(embeddings: list[list[float]]) -> list[float]:
 
 @router.get("/health")
 async def esp32_health():
-    """Connectivity check for the enrollment station camera."""
+    """Connectivity check for the enrollment station camera.
+
+    Also hands back the live preview URL so the modal can show the feed
+    without hardcoding the board's address a second time.
+    """
     ok = await check_health()
     if not ok:
         raise HTTPException(503, "ESP32-CAM unreachable")
-    return {"status": "ok"}
+    return {"status": "ok", "streamUrl": stream_url()}
 
 
 @router.post("/players/{pid}/enroll")
@@ -85,7 +94,10 @@ async def enroll_face_via_esp32(pid: str, shots: int = MIN_GOOD_SHOTS):
     while len(embeddings) < shots and attempts < max(MAX_ATTEMPTS, shots * 3):
         attempts += 1
         try:
-            jpeg_bytes = await capture_snapshot(use_flash=True)
+            # Flash off: the coach watches the live :81/stream preview and
+            # clicks at a moment they judged good, so firing the LED here
+            # would embed an exposure they never actually approved.
+            jpeg_bytes = await capture_snapshot(use_flash=False)
         except ESP32CaptureError as exc:
             raise HTTPException(502, str(exc)) from exc
 

@@ -34,10 +34,25 @@ from utils.display import (
 from app.streamer import buffer as frame_buffer
 from app.events import hub
 from app import face
+from app import sources as _sources
 from utils.skill_profile import SkillAccumulator, evaluate_rubric, default_config
 from config.settings import (
     SKILL_KP_CONF, SKILL_BBOX_MIN_H, SKILL_REACT_DIST, SKILL_SWING_SPEED,
 )
+
+
+def _is_v4l2_device(source) -> bool:
+    """True when `source` addresses a live V4L2 camera device rather than a
+    video file: a bare capture index, or a /dev special-file path.
+
+    os.path.isfile() reports False for a /dev character-device node (it is
+    not a regular file), which is what tells a device path apart from a
+    bundled/uploaded video file path here — the engine has no explicit
+    "kind" field like app.sources's camera_sources documents do.
+    """
+    if isinstance(source, int):
+        return True
+    return not os.path.isfile(str(source))
 
 
 def _open_capture(source):
@@ -49,9 +64,18 @@ def _open_capture(source):
     order than DSHOW — under MSMF the built-in webcam and the external USB
     module can swap indices — so we pin int sources to DSHOW for a stable,
     predictable index. File-path sources use the default backend unchanged.
+
+    On Linux, a V4L2 device source (index or /dev path) gets the same MJPG
+    negotiation as the four-camera rig in app.sources._configure_v4l2 - the
+    drill engine has its own, separate capture path, and an uncompressed
+    1280x800 V4L2 stream alone is already ~61 MB/s on the Pi. Never applied
+    to a file source (it would corrupt decoding) and never on Windows
+    (CAP_DSHOW behaviour is untouched).
     """
     if os.name == "nt" and isinstance(source, int):
         return cv2.VideoCapture(source, cv2.CAP_DSHOW)
+    if os.name != "nt" and _is_v4l2_device(source):
+        return _sources._configure_v4l2(cv2.VideoCapture(source))
     return cv2.VideoCapture(source)
 
 
@@ -657,7 +681,7 @@ class DrillEngine:
         shuttle_worker = None
         try:
             if self._player_model is None:
-                self._player_model = YOLO("yolov8n-pose.pt")
+                self._player_model = YOLO("models/yolov8n-pose.pt")
             player_model = self._player_model
 
             # Load shuttle detection source (local weights / serverless / off).

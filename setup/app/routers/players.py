@@ -99,10 +99,29 @@ def patch_player(pid: str, body: PlayerPatch):
 
 
 @router.delete("/{pid}")
-def deactivate_player(pid: str):
-    res = db.players().update_one({"_id": pid}, {"$set": {"isActive": False}})
-    if res.matched_count == 0:
+def delete_player(pid: str):
+    """Permanently remove a player who has no training history.
+
+    Deactivating goes through PATCH {"isActive": false}; this is the harder
+    action. A player who has ever been assigned to a session or marked present
+    is refused with a 409 — deleting them would leave dangling ids in match
+    records and silently corrupt past statistics. Same shape as delete_session
+    refusing to delete a live match.
+    """
+    doc = db.players().find_one({"_id": pid})
+    if doc is None:
         raise HTTPException(404, "player not found")
+
+    sessions = db.sessions().count_documents({"assignedPlayerIds": pid})
+    records = db.attendance().count_documents({"playerId": pid})
+    if sessions or records:
+        raise HTTPException(
+            409,
+            f"{doc.get('name', 'This player')} has {sessions} session(s) and "
+            f"{records} attendance record(s) — deactivate instead of deleting",
+        )
+
+    db.players().delete_one({"_id": pid})
     return {"ok": True}
 
 

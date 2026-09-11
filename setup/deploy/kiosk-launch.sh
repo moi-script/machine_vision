@@ -23,17 +23,31 @@ WAIT_CEILING=90   # seconds - generous for a cold Pi with a first-boot Mongo
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG" 2>/dev/null; }
 
 log "waiting up to ${WAIT_CEILING}s for http://127.0.0.1:8000/api/health"
-elapsed=0
-until curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1; do
+start=$(date +%s)
+next_progress=10
+# --connect-timeout/--max-time bound each individual poll: without them a
+# single curl can block far longer than the loop's own bookkeeping expects
+# (a cold Mongo makes /api/health's db.ping() hang up to pymongo's default
+# 30s serverSelectionTimeoutMS, so a couple of unbounded polls alone could
+# blow past the ceiling below). Elapsed time is read from the wall clock,
+# not counted in sleep-sized increments, so the ceiling means what it says
+# regardless of how long any one poll took.
+until curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:8000/api/health >/dev/null 2>&1; do
+  elapsed=$(( $(date +%s) - start ))
   if [ "$elapsed" -ge "$WAIT_CEILING" ]; then
     log "API never answered after ${WAIT_CEILING}s - launching the browser anyway (it will show an error page; the restart loop and a reload will recover once the backend comes up)"
     break
   fi
+  # Progress roughly every 10s, driven by elapsed wall-clock time so it
+  # can't fire more than once for the same window even if a poll took
+  # several seconds.
+  if [ "$elapsed" -ge "$next_progress" ]; then
+    log "still waiting (${elapsed}s elapsed)"
+    next_progress=$((next_progress + 10))
+  fi
   sleep 1
-  elapsed=$((elapsed + 1))
-  # Progress line every 10s so a hang is diagnosable, not mute.
-  [ $((elapsed % 10)) -eq 0 ] && log "still waiting (${elapsed}s elapsed)"
 done
+elapsed=$(( $(date +%s) - start ))
 [ "$elapsed" -lt "$WAIT_CEILING" ] && log "API answered after ${elapsed}s - launching the browser"
 
 while true; do

@@ -94,7 +94,12 @@ that same subnet. Check with:
 
     sudo reboot
 
-The Pi should come up into the fullscreen UI with no interaction.
+The Pi should come up into the fullscreen UI with no interaction. Expect the
+screen to sit on the desktop background for up to a minute or so first —
+`kiosk-launch.sh` waits for `/api/health` to answer before it opens Chromium
+at all, since the desktop session can come up well before uvicorn finishes
+importing ultralytics and connecting to Mongo. That wait is normal, not a
+fault; see "Operating it" below for where it logs.
 
 ## Operating it
 
@@ -107,6 +112,7 @@ session itself instead).
     systemctl status aerosense mongod    # backend + database
     journalctl -u aerosense -f           # backend logs
     pgrep -af chromium                   # is the kiosk browser actually running?
+    cat ~aerosense/.cache/aerosense-kiosk-wait.log   # did the pre-launch health wait time out?
 
     # reload just the display, without a full reboot
     sudo -u aerosense pkill chromium     # kiosk-launch.sh relaunches it automatically
@@ -124,6 +130,8 @@ desktop directly.
 | Symptom | Check |
 |---|---|
 | Black screen, no UI | Is autologin to desktop on? Is it X11, not Wayland? Then check `cat /home/aerosense/.config/autostart/kiosk.desktop` exists and `pgrep -af chromium` |
+| Screen sat blank/on the desktop for under 90s after boot, then the UI appeared | Expected — `kiosk-launch.sh` was waiting for `/api/health`. Check `~aerosense/.cache/aerosense-kiosk-wait.log` if curious; not a fault |
+| Screen sat blank for exactly ~90s, then an error page loaded | The backend took longer than the wait ceiling to come up (or never did). `journalctl -u aerosense -n 50`; the log will say "API never answered after 90s - launching the browser anyway" |
 | Black screen, backend is healthy | Wrong chromium binary. `ls -l /usr/bin/chromium-browser /usr/bin/chromium` and compare against the `Exec=` line in `/home/aerosense/.config/autostart/kiosk.desktop` — re-run `install.sh` to regenerate it |
 | UI loads, no data | `curl localhost:8000/api/health`; `journalctl -u aerosense -n 50` |
 | `"mongo": false` in health | `systemctl status mongod`; on a Pi 4 Mongo 7 cannot run at all |

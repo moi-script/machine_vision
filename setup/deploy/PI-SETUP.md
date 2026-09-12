@@ -57,6 +57,20 @@ unit-file edits — just clone there and run `install.sh` from that checkout.
 autostart entry with the right one — see the troubleshooting table below if
 that ever looks wrong.
 
+### Where the frontend comes from
+
+That is the only repo the Pi clones, and it already contains the UI. The React
+source lives in a **separate** repo,
+<https://github.com/moi-script/thesis_ui>, but the *built* bundle is committed
+into this one at `setup/app/static/ui/`, and FastAPI serves it at `/`. So the
+Pi needs no Node, no npm and no Vite — one clone gets both halves of the app.
+
+`install.sh` refuses to continue if `app/static/ui/index.html` is absent,
+because a Pi with no bundle comes up to a blank kiosk. If you hit that, the fix
+is on the Windows dev box — `pwsh scripts/build_ui.ps1`, commit
+`setup/app/static/ui`, push — then `git pull` here. Never `npm install` on the
+Pi to work around it.
+
 ## 3. Roboflow API key (optional — not needed by default)
 
 `install.sh` writes `/opt/aerosense/setup/.env` with an **empty**

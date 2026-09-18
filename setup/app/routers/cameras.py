@@ -306,8 +306,7 @@ def start_camera(camera_id: str, body: StartBody):
     if camera_id not in sources.CAMERA_IDS:
         raise HTTPException(404, f"unknown camera {camera_id!r}")
     try:
-        return pipeline.start(camera_id, body.model, body.backend,
-                              body.target_fps, body.top_n)
+        return pipeline.start(camera_id, False, body.backend, body.target_fps)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 

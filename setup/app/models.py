@@ -49,11 +49,27 @@ class CourtSettings(BaseModel):
     netDeadband: float = cfg.NET_DEADBAND
 
 
+class AimAngle(BaseModel):
+    x: int = 90
+    y: int = 90
+
+
+class AimSettings(BaseModel):
+    """Per-zone servo angles (set in Settings > Aim calibration) plus the
+    random jitter that keeps two shots to the same zone from being identical."""
+    zoneAngles: dict[str, AimAngle] = Field(
+        default_factory=lambda: {z: AimAngle() for z in cfg.PLAYER_ZONES})
+    jitterDeg: float = 4
+    angleMin: int = 30
+    angleMax: int = 150
+
+
 class Settings(BaseModel):
     camera: CameraSettings = Field(default_factory=CameraSettings)
     detection: DetectionSettings = Field(default_factory=DetectionSettings)
     drill: DrillSettings = Field(default_factory=DrillSettings)
     court: CourtSettings = Field(default_factory=CourtSettings)
+    aim: AimSettings = Field(default_factory=AimSettings)
 
     @classmethod
     def defaults(cls) -> "Settings":

@@ -16,7 +16,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.routers import players, sessions, settings as settings_router, control, cameras, face_cam
+from app.routers import (
+    players, sessions, settings as settings_router, control, cameras,
+    face_cam, aim as aim_router,
+)
 
 app.include_router(players.router)
 app.include_router(sessions.router)
@@ -25,6 +28,7 @@ app.include_router(control.router)
 app.include_router(control.media_router)
 app.include_router(cameras.router)
 app.include_router(face_cam.router)
+app.include_router(aim_router.router)
 
 
 @app.get("/api/health")

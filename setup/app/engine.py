@@ -145,6 +145,9 @@ class DrillEngine:
         # start() -> _run() handshake so start() can raise synchronously.
         self._started_evt = threading.Event()
         self._start_error: str | None = None
+        # Servo aim config (Task 10) — refreshed from settings at (re)start.
+        from app.models import AimSettings
+        self._aim_cfg = AimSettings()
 
     # ---- public state ----
     @property
@@ -444,6 +447,7 @@ class DrillEngine:
         self._person_conf = s.detection.personConf
         self._shuttle_conf = s.detection.shuttleConf
         self._reco_threshold = s.detection.faceMatchThreshold
+        self._aim_cfg = s.aim
         # ZONE_WEAK_THRESHOLD was bound at import into utils.scoring — patch it
         # on the module that actually holds it so weak-zone logic updates.
         import utils.scoring as scoring_mod
@@ -544,12 +548,20 @@ class DrillEngine:
 
     # ---- feeder (ported from main.py fire_feeder) ----
     def _fire_feeder(self, zone_name: str) -> None:
-        """Trigger the physical feeder machine. Currently just broadcasts the
-        event; wire this to GPIO / serial when moving to the Raspberry Pi."""
-        hub.broadcast({"type": "feeder", "zone": zone_name, "at": _iso()})
-        # GPIO example for Raspberry Pi later:
-        #   GPIO.output(FEEDER_PIN, GPIO.HIGH); time.sleep(0.1)
-        #   GPIO.output(FEEDER_PIN, GPIO.LOW)
+        """Aim the feeder at this zone (calibrated angles + random jitter) and
+        tell the UI. Aiming runs off the loop thread: the serial round-trip
+        must never stall frame processing."""
+        def _go():
+            from app import aim
+            got = None
+            try:
+                got = aim.aim_zone(zone_name, self._aim_cfg)
+            except Exception as exc:  # noqa: BLE001 - the drill never stops for the servo
+                print(f"[AIM] {exc}", flush=True)
+            hub.broadcast({"type": "feeder", "zone": zone_name,
+                           "x": got[0] if got else None,
+                           "y": got[1] if got else None, "at": _iso()})
+        threading.Thread(target=_go, daemon=True, name="aim").start()
 
     # ---- shuttle detection (ported from main.py:54-157) ----
     def _load_shuttle_model(self) -> None:
@@ -662,6 +674,7 @@ class DrillEngine:
             # config constants, so calibration silently had no effect and every
             # court/zone overlay drew at the wrong place.
             court_corners = s.court.corners or None
+            self._aim_cfg = s.aim
         except Exception as exc:  # noqa: BLE001 - fall back to config constants
             hub.broadcast({"type": "error",
                             "message": f"[SETTINGS] using defaults: {exc}"})

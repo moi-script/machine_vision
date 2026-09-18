@@ -6,7 +6,7 @@
  *
  * Plug into the Pi through the board's NATIVE USB port, not the UART one.
  */
-#include <string.h>
+#include <assert.h>
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_camera.h"

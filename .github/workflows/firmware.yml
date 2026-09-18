@@ -1,0 +1,56 @@
+name: firmware
+
+on:
+  push:
+    paths: ["firmware/**", ".github/workflows/firmware.yml"]
+  workflow_dispatch:
+
+jobs:
+  uvc:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        role: [left, right, back, face]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.role }}
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.3
+          target: esp32s3
+          path: firmware/esp32s3_uvc_cam
+          command: >-
+            idf.py -B build_${{ matrix.role }}
+            -D SDKCONFIG=build_${{ matrix.role }}/sdkconfig
+            -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.role.${{ matrix.role }}"
+            build &&
+            cd build_${{ matrix.role }} &&
+            esptool.py --chip esp32s3 merge_bin -o ../aero-${{ matrix.role }}.bin @flash_args
+      - name: Serial string really is the role
+        run: |
+          ROLE=$(echo "${{ matrix.role }}" | tr a-z A-Z)
+          grep -q "\"AERO-$ROLE\"" firmware/esp32s3_uvc_cam/build_${{ matrix.role }}/config/sdkconfig.h
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aero-uvc-${{ matrix.role }}
+          path: firmware/esp32s3_uvc_cam/aero-${{ matrix.role }}.bin
+
+  bundle:
+    needs: uvc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: "aero-uvc-*", merge-multiple: true, path: bins }
+      - uses: actions/upload-artifact@v4
+        with: { name: aero-uvc-bins, path: bins/*.bin }
+
+  servo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/compile-sketches@v1
+        with:
+          sketch-paths: firmware/servo_aim
+          fqbn: arduino:avr:nano
+          libraries: |
+            - name: Servo

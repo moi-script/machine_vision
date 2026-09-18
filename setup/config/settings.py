@@ -152,11 +152,26 @@ SKILL_TIERS = [
 
 
 
-ESP32_CAM_IP: str = "10.200.33.50"
-ESP32_CAM_TIMEOUT_S: float = 5.0
-# Live preview feed runs on its own server on the board — see the sketch's
-# startStreamServer(). Must match STREAM_PORT in esp_camera_face_detection.ino.
-ESP32_CAM_STREAM_PORT: int = 81
+# --- Rig v2: per-slot capture size ---
+# The OV9281 front runs at its native size. The ESP32-S3 boards advertise one
+# fixed UVC mode each (firmware/esp32s3_uvc_cam/sdkconfig.role.*), and asking
+# for anything else just gets refused, so these must match the firmware.
+SLOT_FRAME_SIZE = {
+    "front": (FRAME_WIDTH, FRAME_HEIGHT),
+    "left": (640, 480),
+    "right": (640, 480),
+    "back": (640, 480),
+    "face": (800, 600),
+}
+
+# Front runs flying-shuttle AND pose. If the Pi can't hold both per frame,
+# True runs them on alternate frames instead (decided at bring-up).
+FRONT_ALTERNATE = False
+
+# --- Servo aim (Arduino over USB serial, udev name from 99-aerosense.rules) ---
+import sys
+SERVO_PORT = "/dev/aero-servo" if sys.platform != "win32" else "COM5"
+SERVO_BAUD = 115200
 
 # --- Raspberry Pi inference sizes ---
 # On aarch64 the models run on CPU under NCNN, several times slower than

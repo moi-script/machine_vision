@@ -523,7 +523,19 @@ class DrillEngine:
         latest = frame_buffer.latest()
         if latest is not None and self._state != "idle":
             return latest
-        cap = _open_engine_capture(True, CAMERA_INDEX, FRAME_WIDTH, FRAME_HEIGHT, False)
+        # A Cameras-page pipeline worker may already hold the "front" device
+        # open — reuse its latest frame instead of contending for the device
+        # (opening it twice can fail, or steal frames from the live view).
+        from app import pipeline
+        w = pipeline.get("front")
+        if w is not None and w.alive:
+            frame = w.latest_frame()
+            if frame is not None:
+                return cv2.imencode(".jpg", frame)[1].tobytes()
+        try:
+            cap = _open_engine_capture(True, CAMERA_INDEX, FRAME_WIDTH, FRAME_HEIGHT, False)
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"camera unavailable: {exc}") from exc
         ok, frame = cap.read()
         cap.release()
         if not ok:
@@ -828,6 +840,7 @@ class DrillEngine:
                 return_side_count = 0
 
             fps_times = []
+            read_failures = 0
 
             while True:
                 if self._stop_flag:
@@ -835,13 +848,18 @@ class DrillEngine:
 
                 ret, frame = cap.read()
                 if not ret:
-                    if use_slot and _sources.is_file("front"):
+                    if use_slot and _sources.is_file("front") and read_failures < 3:
                         # Bundled dev-rig clip hit EOF — rewind instead of
                         # ending the drill, so a looping video source behaves
                         # like a live feed for as long as the drill runs.
+                        # Bounded to 3 consecutive failures so a genuinely
+                        # dead source (not just an EOF) still ends the drill
+                        # instead of spinning forever.
+                        read_failures += 1
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         continue
                     break
+                read_failures = 0
 
                 if cam_grayscale and len(frame.shape) == 2:
                     frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)

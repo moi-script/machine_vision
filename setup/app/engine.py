@@ -79,6 +79,20 @@ def _open_capture(source):
     return cv2.VideoCapture(source)
 
 
+def _open_engine_capture(use_slot: bool, source, width: int, height: int,
+                         grayscale: bool):
+    """The engine's camera. With the rig, that is the front slot, opened
+    exactly as the Cameras page opens it (per-slot MJPG size included)."""
+    if use_slot:
+        return _sources.open_capture("front")
+    cap = _open_capture(source)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    if grayscale and isinstance(source, int):
+        cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+    return cap
+
+
 def _iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -509,9 +523,7 @@ class DrillEngine:
         latest = frame_buffer.latest()
         if latest is not None and self._state != "idle":
             return latest
-        cap = _open_capture(CAMERA_INDEX)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+        cap = _open_engine_capture(True, CAMERA_INDEX, FRAME_WIDTH, FRAME_HEIGHT, False)
         ok, frame = cap.read()
         cap.release()
         if not ok:
@@ -615,6 +627,7 @@ class DrillEngine:
         # cards actually take effect — the "requires a restart" hint is real.
         cam_source, cam_width, cam_height, cam_grayscale = (
             CAMERA_INDEX, FRAME_WIDTH, FRAME_HEIGHT, GRAYSCALE)
+        use_slot = True
         # None -> build_homography() falls back to config.settings.COURT_CORNERS.
         court_corners = None
         try:
@@ -629,6 +642,7 @@ class DrillEngine:
             cam_source = self._norm_source(s.camera.source)
             cam_width, cam_height = s.camera.width, s.camera.height
             cam_grayscale = s.camera.grayscale
+            use_slot = s.camera.useFrontSlot
             self._reco_threshold = s.detection.faceMatchThreshold
             self._reco_grayscale = cam_grayscale
             # The Settings page / calibrate endpoint persists corners to Mongo.
@@ -656,11 +670,11 @@ class DrillEngine:
             return
 
         # ── Camera setup (inline open_camera(), substitution 1) ──────
-        cap = _open_capture(cam_source)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, cam_width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cam_height)
-        if cam_grayscale and isinstance(cam_source, int):
-            cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+        try:
+            cap = _open_engine_capture(use_slot, cam_source, cam_width,
+                                       cam_height, cam_grayscale)
+        except FileNotFoundError:
+            cap = cv2.VideoCapture()      # not opened -> "camera unavailable" below
 
         if not cap.isOpened():
             try:
@@ -821,6 +835,12 @@ class DrillEngine:
 
                 ret, frame = cap.read()
                 if not ret:
+                    if use_slot and _sources.is_file("front"):
+                        # Bundled dev-rig clip hit EOF — rewind instead of
+                        # ending the drill, so a looping video source behaves
+                        # like a live feed for as long as the drill runs.
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        continue
                     break
 
                 if cam_grayscale and len(frame.shape) == 2:

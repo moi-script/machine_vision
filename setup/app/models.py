@@ -12,6 +12,10 @@ class CameraSettings(BaseModel):
     height: int = cfg.FRAME_HEIGHT
     grayscale: bool = cfg.GRAYSCALE
     fpsTarget: int = cfg.FPS_TARGET
+    # Rig v2: the drill engine reads the "front" camera slot (Cameras page),
+    # so it and the live view can never disagree about which device is front.
+    # False falls back to `source` above (the pre-rig single-camera setup).
+    useFrontSlot: bool = True
 
 
 class DetectionSettings(BaseModel):

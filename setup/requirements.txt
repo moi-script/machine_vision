@@ -15,3 +15,4 @@ uvicorn[standard]
 pymongo
 python-multipart
 httpx        # app/esp32_camera_client.py — snapshot pull from the ESP32-CAM
+pyserial>=3.5

@@ -52,6 +52,18 @@ apt-get install -y python3-venv python3-pip python3-opencv \
 # before the binary check below ever runs.
 apt-get install -y chromium-browser || apt-get install -y chromium || true
 
+# x11-xserver-utils: xrandr for the two-screen kiosk; xinput maps the touchscreen
+# onto the operator screen only; v4l-utils for checking cameras by hand.
+apt-get install -y x11-xserver-utils xinput v4l-utils
+
+# ── stable device names (cameras + servo) ───────────────────
+log "installing udev rules"
+install -m 644 "$ROOT/deploy/99-aerosense.rules" /etc/udev/rules.d/99-aerosense.rules
+udevadm control --reload
+udevadm trigger
+# Read the cameras and the servo port without root.
+usermod -aG video,dialout "$RUN_USER"
+
 # ── kiosk browser binary ────────────────────────────────────
 # ...and they differ on the installed *binary* path the same way. kiosk is
 # launched via an XDG autostart entry that hardcodes chromium-browser as its

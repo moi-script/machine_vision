@@ -33,6 +33,13 @@ def _open_serial(port: str, baud: int):
     return serial.Serial(port, baud, timeout=REPLY_TIMEOUT_S)
 
 
+def _parse_ok(reply: str | None) -> tuple[int, int] | None:
+    parts = (reply or "").split()
+    if len(parts) == 3 and parts[0] == "OK":
+        return int(parts[1]), int(parts[2])
+    return None
+
+
 class Aimer:
     def __init__(self, port: str, baud: int = 115200, opener=None):
         self.port = port
@@ -54,6 +61,17 @@ class Aimer:
         self._ser = None
 
     def _ensure(self) -> bool:
+        """Open the port and confirm the board is actually there.
+
+        Called with self._lock already held. A Nano/Uno resets when the port
+        opens and stays silent for ~1-2s before printing READY, so an empty
+        readline (a read timeout) must not be read as "no READY coming" — it
+        just means the board hasn't booted yet. Keep reading until READY
+        shows up or the full READY_TIMEOUT_S deadline passes. If the deadline
+        passes with no READY, the board may simply already be running (no
+        reset on this open): confirm with a P/PONG ping before trusting the
+        port, and give up (close it) if that fails too.
+        """
         if self._ser is not None:
             return True
         try:
@@ -62,57 +80,85 @@ class Aimer:
             print(f"[AIM] servo port {self.port} unavailable: {exc}", flush=True)
             return False
         deadline = time.time() + READY_TIMEOUT_S
+        got_ready = False
         while time.time() < deadline:
             line = ser.readline().decode(errors="ignore").strip()
             if line == "READY":
+                got_ready = True
                 break
-            if not line:
-                # Already booted (no reset on open): no READY coming. Carry on.
-                break
+            # empty (read timeout) or other noise while the board boots —
+            # keep waiting out the deadline instead of bailing on line 1.
+        if not got_ready:
+            try:
+                ser.reset_input_buffer()
+                ser.write(b"P\n")
+                reply = ser.readline().decode(errors="ignore").strip()
+            except Exception as exc:
+                print(f"[AIM] servo port {self.port} ping failed: {exc}",
+                      flush=True)
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+                return False
+            if reply != "PONG":
+                print(f"[AIM] servo port {self.port} gave no READY/PONG "
+                      f"(got {reply!r}) — treating as offline", flush=True)
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+                return False
         self._ser = ser
         return True
 
-    def _command(self, cmd: str) -> str | None:
+    def _exchange(self, cmd: str, expect) -> str | None:
+        """Ensure -> write -> read -> validate, all under one lock hold, so a
+        concurrent caller's successful exchange can never be torn down mid-
+        way by another thread's _drop(). `expect(reply)` decides validity; an
+        invalid reply (including "") drops the port and returns None."""
         with self._lock:
             if not self._ensure():
                 return None
             try:
                 self._ser.reset_input_buffer()
                 self._ser.write((cmd + "\n").encode())
-                return self._ser.readline().decode(errors="ignore").strip()
+                reply = self._ser.readline().decode(errors="ignore").strip()
             except Exception as exc:
                 print(f"[AIM] serial error: {exc}", flush=True)
                 self._drop()
                 return None
+            if not expect(reply):
+                if reply:
+                    print(f"[AIM] unexpected reply {reply!r}", flush=True)
+                self._drop()
+                return None
+            return reply
 
     def move(self, x: int, y: int) -> tuple[int, int] | None:
-        reply = self._command(f"A {int(x)} {int(y)}")
-        parts = (reply or "").split()
-        if len(parts) == 3 and parts[0] == "OK":
-            return int(parts[1]), int(parts[2])
-        if reply is not None:
-            print(f"[AIM] unexpected reply {reply!r}", flush=True)
-            with self._lock:
-                self._drop()
-        return None
+        reply = self._exchange(f"A {int(x)} {int(y)}",
+                                lambda r: _parse_ok(r) is not None)
+        return _parse_ok(reply)
 
     def center(self) -> tuple[int, int] | None:
-        reply = self._command("C")
-        parts = (reply or "").split()
-        return (int(parts[1]), int(parts[2])) if len(parts) == 3 and parts[0] == "OK" else None
+        reply = self._exchange("C", lambda r: _parse_ok(r) is not None)
+        return _parse_ok(reply)
 
     def ping(self) -> bool:
-        return self._command("P") == "PONG"
+        return self._exchange("P", lambda r: r == "PONG") == "PONG"
 
 
 _aimer: Aimer | None = None
+_aimer_lock = threading.Lock()
 _rng = random.Random()
 
 
 def get_aimer() -> Aimer:
     global _aimer
     if _aimer is None:
-        _aimer = Aimer(_settings.SERVO_PORT, _settings.SERVO_BAUD)
+        with _aimer_lock:
+            if _aimer is None:
+                _aimer = Aimer(_settings.SERVO_PORT, _settings.SERVO_BAUD)
     return _aimer
 
 

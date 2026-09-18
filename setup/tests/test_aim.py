@@ -104,3 +104,61 @@ def test_fire_feeder_broadcasts_angles(monkeypatch):
     engine.DrillEngine()._fire_feeder("back_left")
     assert sent[-1]["type"] == "feeder"
     assert (sent[-1]["zone"], sent[-1]["x"], sent[-1]["y"]) == ("back_left", 61, 99)
+
+
+def test_aimer_waits_out_reset_before_ready():
+    # A Nano/Uno resets on port-open and stays silent for a while before
+    # printing READY — empty readlines (read timeouts) must not be mistaken
+    # for "no READY coming".
+    fake = FakeSerial(["", "", "", "READY", "OK 70 100"])
+    opens = []
+
+    def opener(port, baud):
+        opens.append((port, baud))
+        return fake
+
+    a = aim.Aimer("X", opener=opener)
+    assert a.move(70, 100) == (70, 100)
+    assert len(opens) == 1
+
+
+def test_aimer_already_booted_pings_before_trusting_port(monkeypatch):
+    # No READY ever comes (board was already running, no reset on this
+    # open) — once the deadline passes, a P/PONG ping confirms the board
+    # before the first real command is trusted.
+    times = iter([0.0, 0.1, 0.2, 0.3, 10.0])
+    monkeypatch.setattr(aim.time, "time", lambda: next(times))
+    monkeypatch.setattr(aim, "READY_TIMEOUT_S", 1.0)
+    fake = FakeSerial(["", "", "", "PONG", "OK 80 80"])
+    a = aim.Aimer("X", opener=lambda port, baud: fake)
+    assert a.move(80, 80) == (80, 80)
+
+
+def test_aimer_no_ready_no_pong_goes_offline(monkeypatch):
+    monkeypatch.setattr(aim, "READY_TIMEOUT_S", 0.05)
+    fake = FakeSerial([])  # readline() always returns "" (no data at all)
+    a = aim.Aimer("X", opener=lambda port, baud: fake)
+    assert a.move(80, 80) is None
+    assert a.connected is False
+    assert fake.is_open is False
+
+
+def test_get_aimer_is_a_singleton_under_concurrency(monkeypatch):
+    import threading as _threading
+
+    monkeypatch.setattr(aim, "_aimer", None)
+    results = []
+    barrier = _threading.Barrier(8)
+
+    def worker():
+        barrier.wait()
+        results.append(aim.get_aimer())
+
+    threads = [_threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(results) == 8
+    assert len({id(r) for r in results}) == 1

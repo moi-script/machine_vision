@@ -81,3 +81,45 @@ def test_control_status():
     r = client.get("/api/control/status")
     assert r.status_code == 200
     assert "state" in r.json()
+
+
+class _StartingWorker:
+    """A worker whose thread has spawned (`alive`) but hasn't read a frame yet."""
+    alive = True
+
+    def latest_frame(self):
+        return None
+
+
+def test_grab_raises_camera_starting_instead_of_opening(monkeypatch):
+    monkeypatch.setattr(pipeline, "get", lambda cid: _StartingWorker())
+    monkeypatch.setattr(vcam, "STARTUP_WAIT_S", 0)
+    monkeypatch.setattr(vcam.time, "sleep", lambda s: None)
+
+    def boom(cid):
+        raise AssertionError("opened the device while a worker holds it")
+    monkeypatch.setattr(vcam, "_open", boom)
+
+    with pytest.raises(vcam.CameraStarting):
+        vcam.grab("left")
+
+
+def test_start_camera_uses_the_control_lock(monkeypatch):
+    entered = {"v": False}
+
+    class FakeLock:
+        def __enter__(self):
+            entered["v"] = True
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(control, "_ctl_lock", FakeLock())
+    monkeypatch.setattr(cameras, "_engine_holds_front", lambda: False)
+    monkeypatch.setattr(cameras.pipeline, "start",
+                        lambda cid, raw=False, backend=None, target_fps=30.0:
+                        {"camera_id": cid})
+    r = client.post("/api/cameras/left/start", json={})
+    assert r.status_code == 200
+    assert entered["v"] is True

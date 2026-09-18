@@ -89,6 +89,7 @@ def stop():
 
 @router.get("/status")
 def status():
+    # No _ctl_lock: status() only reads, nothing here mutates engine state.
     return get_engine().status()
 
 

@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from app import db, pipeline, sources, virtual_camera as vcam
 from app.calibration import (CORNER_LABELS, CalibrationError, fit_lines,
                              line_overlay, reproject, solve)
+from app.routers import control
 from utils import zones
 
 router = APIRouter(tags=["cameras"])
@@ -76,6 +77,8 @@ def get_frame(camera_id: str, index: int | None = None, enhance: bool = True):
         frame_id, frame = vcam.grab(camera_id, index)
     except FileNotFoundError as exc:
         raise HTTPException(503, f"no source for {camera_id}: {exc}")
+    except vcam.CameraStarting:
+        raise HTTPException(503, "camera is starting - try again")
     except Exception as exc:
         raise HTTPException(500, str(exc))
 
@@ -317,14 +320,17 @@ def list_models():
 def start_camera(camera_id: str, body: StartBody):
     if camera_id not in sources.CAMERA_IDS:
         raise HTTPException(404, f"unknown camera {camera_id!r}")
-    if camera_id == "front" and _engine_holds_front():
-        # The engine owns the device; its annotated frames are what we show.
-        return {"camera_id": "front", "running": True, "borrowed": True,
-                "model": "engine", "error": None}
-    try:
-        return pipeline.start(camera_id, body.raw, body.backend, body.target_fps)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
+    # Share control.py's lock: without it, an engine control.start and this
+    # front start_camera can interleave and both open the device.
+    with control._ctl_lock:
+        if camera_id == "front" and _engine_holds_front():
+            # The engine owns the device; its annotated frames are what we show.
+            return {"camera_id": "front", "running": True, "borrowed": True,
+                    "model": "engine", "error": None}
+        try:
+            return pipeline.start(camera_id, body.raw, body.backend, body.target_fps)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
 
 
 @router.post("/api/cameras/{camera_id}/stop")

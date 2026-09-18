@@ -53,8 +53,8 @@ apt-get install -y python3-venv python3-pip python3-opencv \
 apt-get install -y chromium-browser || apt-get install -y chromium || true
 
 # x11-xserver-utils: xrandr for the two-screen kiosk; xinput maps the touchscreen
-# onto the operator screen only; v4l-utils for checking cameras by hand.
-apt-get install -y x11-xserver-utils xinput v4l-utils
+# onto the operator screen only.
+apt-get install -y x11-xserver-utils xinput
 
 # ── stable device names (cameras + servo) ───────────────────
 log "installing udev rules"

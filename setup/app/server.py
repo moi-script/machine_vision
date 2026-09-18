@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import db
 from app.events import hub
-from app.routers import esp32_enroll
 app = FastAPI(title="AeroSense Backend")
 app.add_middleware(
     CORSMiddleware,
@@ -17,7 +16,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.routers import players, sessions, settings as settings_router, control, cameras
+from app.routers import players, sessions, settings as settings_router, control, cameras, face_cam
 
 app.include_router(players.router)
 app.include_router(sessions.router)
@@ -25,7 +24,7 @@ app.include_router(settings_router.router)
 app.include_router(control.router)
 app.include_router(control.media_router)
 app.include_router(cameras.router)
-app.include_router(esp32_enroll.router)
+app.include_router(face_cam.router)
 
 
 @app.get("/api/health")

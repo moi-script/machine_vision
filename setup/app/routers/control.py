@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app import pipeline
 from app.engine import get_engine
 from app.streamer import buffer
 
@@ -48,6 +49,9 @@ def start(body: StartBody):
         if eng.state != "idle":
             eng.stop()
         try:
+            # The engine opens the front camera itself; a Cameras-page worker
+            # holding it would make that open fail.
+            pipeline.stop("front")
             eng.start(body.sessionId, body.difficulty, body.shots, armed=body.armed)
         except RuntimeError as exc:
             # A real failure to start (camera unavailable / not calibrated).
@@ -81,6 +85,11 @@ def stop():
     with _ctl_lock:
         eng = get_engine(); eng.stop()
         return {"ok": True, "status": eng.status()}
+
+
+@router.get("/status")
+def status():
+    return get_engine().status()
 
 
 @router.post("/difficulty")

@@ -70,6 +70,8 @@ def get_frame(camera_id: str, index: int | None = None, enhance: bool = True):
     """
     if camera_id not in vcam.CAMERA_IDS:
         raise HTTPException(404, f"unknown camera {camera_id!r}")
+    if camera_id == "front" and _engine_holds_front():
+        raise HTTPException(409, "a session is using the front camera - stop it to calibrate")
     try:
         frame_id, frame = vcam.grab(camera_id, index)
     except FileNotFoundError as exc:
@@ -290,23 +292,37 @@ def set_source(camera_id: str, body: SourceBody):
 # -- live pipeline -------------------------------------------
 
 class StartBody(BaseModel):
-    model: str = "none"
+    # What runs is fixed per slot (pipeline.SLOT_MODELS). `raw` asks for the
+    # bare feed (calibration). An old client's `model` field is ignored.
+    raw: bool = False
     backend: str | None = None
     target_fps: float = 30.0
-    top_n: int | None = None
+
+
+def _engine_holds_front() -> bool:
+    """True while a drill/identity session owns the front camera."""
+    try:
+        from app.engine import get_engine
+        return get_engine().state != "idle"
+    except Exception:
+        return False
 
 
 @router.get("/api/models")
 def list_models():
-    return pipeline.model_catalog()
+    return {"catalog": pipeline.model_catalog(), "slots": pipeline.SLOT_MODELS}
 
 
 @router.post("/api/cameras/{camera_id}/start")
 def start_camera(camera_id: str, body: StartBody):
     if camera_id not in sources.CAMERA_IDS:
         raise HTTPException(404, f"unknown camera {camera_id!r}")
+    if camera_id == "front" and _engine_holds_front():
+        # The engine owns the device; its annotated frames are what we show.
+        return {"camera_id": "front", "running": True, "borrowed": True,
+                "model": "engine", "error": None}
     try:
-        return pipeline.start(camera_id, False, body.backend, body.target_fps)
+        return pipeline.start(camera_id, body.raw, body.backend, body.target_fps)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
@@ -325,6 +341,10 @@ def pipeline_status():
 @router.get("/api/cameras/{camera_id}/stream")
 def stream(camera_id: str):
     """MJPEG. Works in a plain <img> tag, so the page needs no player."""
+    if camera_id == "front" and _engine_holds_front():
+        from app.streamer import buffer
+        return StreamingResponse(
+            buffer.frames(), media_type="multipart/x-mixed-replace; boundary=frame")
     worker = pipeline.get(camera_id)
     if worker is None:
         raise HTTPException(409, f"{camera_id} is not running - start it first")

@@ -16,6 +16,11 @@ from config import settings as _settings
 
 READY_TIMEOUT_S = 3.0    # a Nano resets when the port opens; boot takes ~1.5 s
 REPLY_TIMEOUT_S = 0.5
+RETRY_BACKOFF_S = 10.0   # cool-down after a failed connect (wrong device /
+                         # wedged firmware) before _ensure() opens the port
+                         # again — without this, every call pays the full
+                         # ~3.5s READY+PONG probe, and _fire_feeder spawns an
+                         # aim thread per shot, so blocked threads pile up.
 
 
 def pick_angles(zone: str, cfg, rng: random.Random) -> tuple[int, int]:
@@ -47,6 +52,7 @@ class Aimer:
         self._opener = opener or _open_serial
         self._ser = None
         self._lock = threading.Lock()
+        self._failed_at: float | None = None
 
     @property
     def connected(self) -> bool:
@@ -74,10 +80,16 @@ class Aimer:
         """
         if self._ser is not None:
             return True
+        if (self._failed_at is not None
+                and time.time() - self._failed_at < RETRY_BACKOFF_S):
+            # Still cooling down from a recent failed connect — don't pay
+            # the ~3.5s READY+PONG probe again on every single call.
+            return False
         try:
             ser = self._opener(self.port, self.baud)
         except Exception as exc:
             print(f"[AIM] servo port {self.port} unavailable: {exc}", flush=True)
+            self._failed_at = time.time()
             return False
         deadline = time.time() + READY_TIMEOUT_S
         got_ready = False
@@ -100,6 +112,7 @@ class Aimer:
                     ser.close()
                 except Exception:
                     pass
+                self._failed_at = time.time()
                 return False
             if reply != "PONG":
                 print(f"[AIM] servo port {self.port} gave no READY/PONG "
@@ -108,8 +121,10 @@ class Aimer:
                     ser.close()
                 except Exception:
                     pass
+                self._failed_at = time.time()
                 return False
         self._ser = ser
+        self._failed_at = None
         return True
 
     def _exchange(self, cmd: str, expect) -> str | None:

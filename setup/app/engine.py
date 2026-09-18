@@ -148,6 +148,9 @@ class DrillEngine:
         # Servo aim config (Task 10) — refreshed from settings at (re)start.
         from app.models import AimSettings
         self._aim_cfg = AimSettings()
+        # Never let aim threads queue up: a wedged/silent servo port must not
+        # accumulate one blocked thread per shot (every 1.5s on hard).
+        self._aim_lock = threading.Lock()
 
     # ---- public state ----
     @property
@@ -554,10 +557,20 @@ class DrillEngine:
         def _go():
             from app import aim
             got = None
+            if not self._aim_lock.acquire(blocking=False):
+                # An aim is already in flight (the servo port is slow or
+                # wedged and a previous shot's thread is still in the serial
+                # round-trip) — never queue another one behind it. Skip the
+                # move but still tell the UI the feeder fired.
+                hub.broadcast({"type": "feeder", "zone": zone_name,
+                               "x": None, "y": None, "at": _iso()})
+                return
             try:
                 got = aim.aim_zone(zone_name, self._aim_cfg)
             except Exception as exc:  # noqa: BLE001 - the drill never stops for the servo
                 print(f"[AIM] {exc}", flush=True)
+            finally:
+                self._aim_lock.release()
             hub.broadcast({"type": "feeder", "zone": zone_name,
                            "x": got[0] if got else None,
                            "y": got[1] if got else None, "at": _iso()})

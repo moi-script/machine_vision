@@ -143,6 +143,49 @@ def test_aimer_no_ready_no_pong_goes_offline(monkeypatch):
     assert fake.is_open is False
 
 
+def test_aimer_backs_off_after_failed_connect(monkeypatch):
+    opens = []
+
+    def opener(port, baud):
+        opens.append(1)
+        raise OSError("no such port")
+
+    times = iter([0.0, 5.0, 15.0, 15.5])
+    monkeypatch.setattr(aim.time, "time", lambda: next(times))
+    a = aim.Aimer("X", opener=opener)
+
+    assert a.move(1, 1) is None
+    assert len(opens) == 1          # first attempt: opener called, fails
+
+    assert a.move(1, 1) is None
+    assert len(opens) == 1          # still within RETRY_BACKOFF_S: no retry
+
+    assert a.move(1, 1) is None
+    assert len(opens) == 2          # backoff window elapsed: retried
+
+
+def test_fire_feeder_skips_aim_when_one_already_in_flight(monkeypatch):
+    from app import engine
+    sent = []
+    monkeypatch.setattr(engine.hub, "broadcast", sent.append)
+    calls = []
+    monkeypatch.setattr(aim, "aim_zone",
+                         lambda zone, cfg: calls.append(1) or (61, 99))
+
+    class NowThread:
+        def __init__(self, target, **k): self.t = target
+        def start(self): self.t()
+    monkeypatch.setattr(engine.threading, "Thread", NowThread)
+
+    e = engine.DrillEngine()
+    e._aim_lock.acquire()  # simulate an aim already in flight
+    e._fire_feeder("back_left")
+    assert calls == []
+    assert sent[-1]["type"] == "feeder"
+    assert (sent[-1]["zone"], sent[-1]["x"], sent[-1]["y"]) == \
+        ("back_left", None, None)
+
+
 def test_get_aimer_is_a_singleton_under_concurrency(monkeypatch):
     import threading as _threading
 

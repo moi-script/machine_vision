@@ -9,8 +9,10 @@
 - Active cooling. Sustained CPU inference on all four cores will thermally
   throttle a bare Pi 5, and throttling looks exactly like "the app got slow".
 - The OV9281 front camera and four ESP32-S3 camera boards (left, right, back,
-  face) on a **powered** USB hub, the servo Arduino, a touchscreen and a
-  second monitor.
+  face) on a **powered, Multi-TT** USB 2.0 hub (or spread across the Pi 5's
+  USB ports) — a single-TT hub gives all four full-speed boards one shared
+  12 Mbit/s bus, and the isochronous UVC stream can fail to start on the
+  3rd/4th board — plus the servo Arduino, a touchscreen and a second monitor.
 - A display on HDMI0.
 
 ## 1. Base image
@@ -100,16 +102,18 @@ assign real cameras below.
 
 Flash the four ESP32-S3 boards first (`firmware/README.md` — one firmware
 image per role: left, right, back, face), then plug them all into the
-powered USB hub. Confirm the fixed udev names came up:
+powered, Multi-TT USB hub (or spread them across the Pi 5's own USB ports) —
+a single-TT hub shares one 12 Mbit/s bus across all four full-speed boards
+and the 3rd/4th can fail to stream. Confirm the fixed udev names came up:
 
     ls -l /dev/aero-*
     # aero-left  aero-right  aero-back  aero-face  aero-servo
 
-Then in the UI (Cameras page → Live), assign `left`, `right`, and `back` to
-`/dev/aero-left`, `/dev/aero-right`, and `/dev/aero-back` respectively, and
+`left`, `right`, `back`, and `face` need no assignment on Linux — they default
+to their fixed `/dev/aero-*` udev names. In the UI (Cameras page → Live),
 assign `front` to the OV9281's `/dev/v4l/by-id/...` entry (list it with
-`ls -l /dev/v4l/by-id/`). `face` needs no assignment — it defaults to
-`/dev/aero-face`. The assignment is stored in Mongo and survives reboots.
+`ls -l /dev/v4l/by-id/`). The assignment is stored in Mongo and survives
+reboots.
 
 Then calibrate each camera's court corners as usual.
 

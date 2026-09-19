@@ -56,6 +56,12 @@ def _default_for(camera_id: str) -> dict:
         if sys.platform == "win32":
             return {"kind": "device", "index": 0}
         return {"kind": "device", "path": "/dev/aero-face"}
+    if camera_id != "front" and sys.platform != "win32":
+        # left/right/back are ESP32-S3 boards with fixed udev names on the Pi.
+        # Windows dev boxes have no such devices, so they keep the bundled
+        # footage; front keeps its bundled default everywhere until the
+        # OV9281 is assigned explicitly.
+        return {"kind": "device", "path": f"/dev/aero-{camera_id}"}
     return dict(_DEFAULTS[camera_id])
 
 

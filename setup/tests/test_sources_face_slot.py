@@ -57,6 +57,23 @@ def test_face_defaults_to_index_0_on_windows(monkeypatch):
     assert sources._default_for("face") == {"kind": "device", "index": 0}
 
 
+@pytest.mark.parametrize("slot", ["left", "right", "back"])
+def test_court_side_slots_default_to_the_udev_name_on_linux(monkeypatch, slot):
+    monkeypatch.setattr(sources.sys, "platform", "linux")
+    assert sources._default_for(slot) == {"kind": "device", "path": f"/dev/aero-{slot}"}
+
+
+@pytest.mark.parametrize("slot", ["left", "right", "back"])
+def test_court_side_slots_keep_bundled_footage_on_windows(monkeypatch, slot):
+    monkeypatch.setattr(sources.sys, "platform", "win32")
+    assert sources._default_for(slot) == sources._DEFAULTS[slot]
+
+
+def test_front_keeps_bundled_default_on_linux(monkeypatch):
+    monkeypatch.setattr(sources.sys, "platform", "linux")
+    assert sources._default_for("front") == sources._DEFAULTS["front"]
+
+
 def test_face_source_can_be_set():
     src = sources.set_source("face", "device", path="/dev/aero-face")
     assert src == {"kind": "device", "path": "/dev/aero-face"}

@@ -349,8 +349,18 @@ def stream(camera_id: str):
     """MJPEG. Works in a plain <img> tag, so the page needs no player."""
     if camera_id == "front" and _engine_holds_front():
         from app.streamer import buffer
+
+        def borrowed_frames():
+            # buffer.frames() loops forever; stop once the engine gives the
+            # camera back, or this generator would outlive the drill and keep
+            # serving a stale/frozen feed to whoever is still connected.
+            for chunk in buffer.frames():
+                yield chunk
+                if not _engine_holds_front():
+                    return
+
         return StreamingResponse(
-            buffer.frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+            borrowed_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
     worker = pipeline.get(camera_id)
     if worker is None:
         raise HTTPException(409, f"{camera_id} is not running - start it first")

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 
@@ -75,6 +76,28 @@ def test_engine_start_frees_front_first(monkeypatch):
     r = client.post("/api/control/start", json={"sessionId": "s1"})
     assert r.status_code == 200
     assert order == ["stop:front", "engine"]
+
+
+def test_borrowed_front_stream_ends_when_engine_releases(monkeypatch):
+    from app.streamer import buffer
+    buffer.publish(b"jpg")
+    try:
+        calls = {"n": 0}
+
+        def holds():
+            calls["n"] += 1
+            return calls["n"] == 1  # True to enter the borrowed branch, False after
+
+        monkeypatch.setattr(cameras, "_engine_holds_front", holds)
+        response = cameras.stream("front")
+
+        async def drain():
+            return [chunk async for chunk in response.body_iterator]
+
+        chunks = asyncio.run(drain())
+        assert len(chunks) == 1
+    finally:
+        buffer.clear()
 
 
 def test_control_status():

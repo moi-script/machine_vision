@@ -8,7 +8,9 @@
   arm64, and NCNN wheels are aarch64.
 - Active cooling. Sustained CPU inference on all four cores will thermally
   throttle a bare Pi 5, and throttling looks exactly like "the app got slow".
-- The four court USB cameras, plus the ESP32-CAM on the same LAN.
+- The OV9281 front camera and four ESP32-S3 camera boards (left, right, back,
+  face) on a **powered** USB hub, the servo Arduino, a touchscreen and a
+  second monitor.
 - A display on HDMI0.
 
 ## 1. Base image
@@ -96,31 +98,37 @@ page's "bundled" list is empty. That's the expected first-boot state, not a
 fault — nothing crashes, all four slots just show as unavailable until you
 assign real cameras below.
 
-Unlike Windows, capture indices are not stable across reboots here, so sources
-are stored as `/dev/v4l/by-id/...` paths instead. List what is attached:
+Flash the four ESP32-S3 boards first (`firmware/README.md` — one firmware
+image per role: left, right, back, face), then plug them all into the
+powered USB hub. Confirm the fixed udev names came up:
 
-    ls -l /dev/v4l/by-id/
-    v4l2-ctl --list-devices
+    ls -l /dev/aero-*
+    # aero-left  aero-right  aero-back  aero-face  aero-servo
 
-Then in the UI (Cameras page), probe for devices and assign one to each of
-`front`, `left`, `right`, `back`. The assignment is stored in Mongo and
-survives reboots. Record the mapping here for your own build:
-
-| Slot  | by-id path | Physical camera |
-|-------|-----------|-----------------|
-| front |           |                 |
-| left  |           |                 |
-| right |           |                 |
-| back  |           |                 |
+Then in the UI (Cameras page → Live), assign `left`, `right`, and `back` to
+`/dev/aero-left`, `/dev/aero-right`, and `/dev/aero-back` respectively, and
+assign `front` to the OV9281's `/dev/v4l/by-id/...` entry (list it with
+`ls -l /dev/v4l/by-id/`). `face` needs no assignment — it defaults to
+`/dev/aero-face`. The assignment is stored in Mongo and survives reboots.
 
 Then calibrate each camera's court corners as usual.
 
-## 5. ESP32-CAM
+## 5. Screens and servo
 
-`config/settings.py` pins `ESP32_CAM_IP = "10.200.33.50"`. The Pi must be on
-that same subnet. Check with:
+`/etc/aerosense/displays.conf` controls which monitor each Chromium window
+lands on: `APP_OUTPUT` for the touchscreen (the main app) and
+`SCOREBOARD_OUTPUT` for the second monitor (`/#/scoreboard`). Check the
+actual output names with:
 
-    curl -o /dev/null -w '%{http_code}\n' http://10.200.33.50/capture
+    DISPLAY=:0 xrandr --listmonitors
+
+If both windows land on the same screen, set `APP_OUTPUT`/`SCOREBOARD_OUTPUT`
+in `/etc/aerosense/displays.conf` to the names `xrandr` reports.
+
+For the servo: flash `servo_aim.ino` to the Arduino, wire the servos (D9 = X,
+D10 = Y, separate 5-6 V supply), and plug it in — it should show up as
+`/dev/aero-servo`. Then in the UI, go to Settings → Aim calibration and set
+the per-zone servo angles for each of the six zones.
 
 ## 6. Reboot
 
@@ -145,6 +153,8 @@ session itself instead).
     journalctl -u aerosense -f           # backend logs
     pgrep -af chromium                   # is the kiosk browser actually running?
     cat ~aerosense/.cache/aerosense-kiosk-wait.log   # did the pre-launch health wait time out?
+    ls -l /dev/aero-*                    # camera + servo devices present under their fixed names?
+    journalctl -u aerosense | grep AIM   # servo/aim subsystem log lines
 
     # reload just the display, without a full reboot
     sudo -u aerosense pkill chromium     # kiosk-launch.sh relaunches it automatically

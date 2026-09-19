@@ -30,6 +30,9 @@ jobs:
         run: |
           ROLE=$(echo "${{ matrix.role }}" | tr a-z A-Z)
           grep -q "\"AERO-$ROLE\"" firmware/esp32s3_uvc_cam/build_${{ matrix.role }}/config/sdkconfig.h
+      - name: Bulk transfer mode is set (shares bandwidth across boards)
+        run: |
+          grep -q "CONFIG_UVC_MODE_BULK_CAM1 1" firmware/esp32s3_uvc_cam/build_${{ matrix.role }}/config/sdkconfig.h
       - uses: actions/upload-artifact@v4
         with:
           name: aero-uvc-${{ matrix.role }}

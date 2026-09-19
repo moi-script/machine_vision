@@ -13,3 +13,7 @@ CONFIG_FORMAT_MJPEG_CAM1=y
 CONFIG_UVC_CAM1_MULTI_FRAMESIZE=n
 CONFIG_TUSB_MANUFACTURER="AeroSense"
 CONFIG_TUSB_PRODUCT="AeroSense Cam"
+
+# Bulk transfers share USB bandwidth instead of reserving it per endpoint like
+# isochronous does, so four boards fit behind one single-TT hub.
+CONFIG_UVC_MODE_BULK_CAM1=y

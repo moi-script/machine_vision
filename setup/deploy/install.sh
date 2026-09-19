@@ -203,6 +203,11 @@ echo
 # LightDM's autologin brings up X11, where DISPLAY/XAUTHORITY are already
 # real and no target games are needed.
 log "installing the kiosk autostart entry"
+# Per-Pi display/touch overrides (which output is the app vs. the scoreboard,
+# which xinput device is the touchscreen). Never overwritten on re-run - a
+# rig's actual wiring can differ from the auto-picked defaults.
+install -d -m 755 /etc/aerosense
+[ -f /etc/aerosense/displays.conf ] || install -m 644 "$ROOT/deploy/displays.conf.example" /etc/aerosense/displays.conf
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 [ -n "$RUN_HOME" ] && [ -d "$RUN_HOME" ] || die "no home directory for $RUN_USER"
 chmod 755 "$ROOT/deploy/kiosk-launch.sh"

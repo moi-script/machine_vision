@@ -50,15 +50,51 @@ done
 elapsed=$(( $(date +%s) - start ))
 [ "$elapsed" -lt "$WAIT_CEILING" ] && log "API answered after ${elapsed}s - launching the browser"
 
-while true; do
-  "$BIN" \
-    --app=http://127.0.0.1:8000 \
-    --start-fullscreen \
-    --kiosk \
-    --noerrdialogs \
-    --disable-infobars \
-    --disable-session-crashed-bubble \
-    --check-for-update-interval=31536000 \
-    --autoplay-policy=no-user-gesture-required
-  sleep 3
-done
+# ── two screens ──────────────────────────────────────────────
+# Touchscreen = the full app; the non-touch monitor = the view-only scoreboard.
+APP_OUTPUT=""; SCOREBOARD_OUTPUT=""; TOUCH_DEVICE=""
+[ -r /etc/aerosense/displays.conf ] && . /etc/aerosense/displays.conf
+
+# "NAME X" per monitor, in xrandr's order. A line looks like:
+#  0: +*HDMI-A-1 1920/527x1080/296+0+0  HDMI-A-1
+monitors() {
+  xrandr --listmonitors 2>/dev/null | awk 'NR>1 {split($3,g,"+"); print $4, g[2]}'
+}
+offset_of() { monitors | awk -v n="$1" '$1==n {print $2}'; }
+
+MONS="$(monitors)"
+[ -z "$APP_OUTPUT" ] && APP_OUTPUT="$(printf '%s\n' "$MONS" | awk 'NR==1{print $1}')"
+[ -z "$SCOREBOARD_OUTPUT" ] && SCOREBOARD_OUTPUT="$(printf '%s\n' "$MONS" | awk -v a="$APP_OUTPUT" '$1!=a{print $1; exit}')"
+APP_X="$(offset_of "$APP_OUTPUT")"; APP_X="${APP_X:-0}"
+log "monitors: $(printf '%s' "$MONS" | tr '\n' ';') app=$APP_OUTPUT@$APP_X scoreboard=${SCOREBOARD_OUTPUT:-none}"
+
+# With two monitors X spans touch over both; pin it to the app screen.
+[ -z "$TOUCH_DEVICE" ] && TOUCH_DEVICE="$(xinput list --name-only 2>/dev/null | grep -i -m1 touch || true)"
+if [ -n "$TOUCH_DEVICE" ] && [ -n "$APP_OUTPUT" ]; then
+  xinput map-to-output "$TOUCH_DEVICE" "$APP_OUTPUT" && log "touch '$TOUCH_DEVICE' -> $APP_OUTPUT"
+fi
+
+# Each window needs its own profile dir, or Chromium hands the second URL to
+# the first process and ignores its position/kiosk flags.
+kiosk_loop() {   # $1 url  $2 x-offset  $3 profile-name
+  while true; do
+    "$BIN" \
+      --app="$1" \
+      --user-data-dir="${XDG_CONFIG_HOME:-$HOME/.config}/aerosense-$3" \
+      --window-position="$2,0" \
+      --start-fullscreen \
+      --kiosk \
+      --noerrdialogs \
+      --disable-infobars \
+      --disable-session-crashed-bubble \
+      --check-for-update-interval=31536000 \
+      --autoplay-policy=no-user-gesture-required
+    sleep 3
+  done
+}
+
+if [ -n "$SCOREBOARD_OUTPUT" ]; then
+  SB_X="$(offset_of "$SCOREBOARD_OUTPUT")"
+  kiosk_loop "http://127.0.0.1:8000/#/scoreboard" "${SB_X:-0}" scoreboard &
+fi
+kiosk_loop "http://127.0.0.1:8000" "$APP_X" app

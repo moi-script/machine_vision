@@ -1,9 +1,17 @@
 # AeroSense — orientation for Claude Code
 
-Badminton training system: four court cameras plus an ESP32-CAM feed a YOLO
-pipeline (shuttle, pose, court lines, face recognition), FastAPI stores drills
-in MongoDB, and a React UI drives it all. It runs as a kiosk appliance on a
-Raspberry Pi 5 and as a normal app on the Windows dev box.
+Badminton training system: five USB cameras feed a YOLO pipeline (shuttle,
+pose, court lines, face recognition), FastAPI stores drills in MongoDB, and a
+React UI drives it all. It runs as a kiosk appliance on a Raspberry Pi 5 and as
+a normal app on the Windows dev box.
+
+The rig is **v2** (shipped 2026-09-22): an OV9281 `front` camera plus four
+ESP32-S3 USB webcams on udev-stable names — `/dev/aero-left`, `-right`,
+`-back`, `-face` — and servo aiming through an Arduino at `/dev/aero-servo`.
+Each device has exactly one reader. Models are fixed per slot: `front` =
+shuttle + pose, `left`/`right`/`back` = landed shuttle, `face` = raw. The old
+Wi-Fi ESP32-CAM enrollment is gone; registration uses the USB face camera. A
+second monitor shows `/#/scoreboard`.
 
 ## Where things are
 
@@ -16,7 +24,9 @@ Raspberry Pi 5 and as a normal app on the Windows dev box.
 | `setup/scripts/` | `build_ui.ps1` (UI bundle) and the Windows packaging scripts |
 | `setup/docs/RUN-WINDOWS.md` | Running it on Windows |
 | `setup/app/static/ui/` | **Built** React bundle, committed. Never hand-edit. |
-| `docs/superpowers/plans/` | How things were built — historical record, not instructions |
+| `firmware/` | ESP32-S3 UVC camera firmware (ESP-IDF, built by CI) and the Arduino servo sketch — see `firmware/README.md` |
+| `setup/deploy/updates/` | One note per Pi upgrade: what changed, the commands, the checks |
+| `docs/superpowers/plans/` | How things were built — historical record, **not instructions**. Check the top of a plan for a STATUS banner before acting on it; a shipped plan is not a to-do list, whatever its "for agentic workers" header says. Unticked boxes do not mean unfinished — verify against the source. |
 
 ## The frontend is a separate repo
 

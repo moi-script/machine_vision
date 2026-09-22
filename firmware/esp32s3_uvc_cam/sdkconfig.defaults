@@ -1,0 +1,19 @@
+# Freenove ESP32-S3-WROOM CAM (N8R8): octal PSRAM, 8 MB flash
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_CAMERA_CORE1=y
+
+# UVC device: one camera, MJPEG only, one fixed frame size (set per role)
+CONFIG_UVC_SUPPORT_TWO_CAM=n
+CONFIG_FORMAT_MJPEG_CAM1=y
+CONFIG_UVC_CAM1_MULTI_FRAMESIZE=n
+CONFIG_TUSB_MANUFACTURER="AeroSense"
+CONFIG_TUSB_PRODUCT="AeroSense Cam"
+
+# Bulk transfers share USB bandwidth instead of reserving it per endpoint like
+# isochronous does, so four boards fit behind one single-TT hub.
+CONFIG_UVC_MODE_BULK_CAM1=y

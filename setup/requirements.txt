@@ -14,4 +14,5 @@ fastapi
 uvicorn[standard]
 pymongo
 python-multipart
-httpx        # app/esp32_camera_client.py — snapshot pull from the ESP32-CAM
+httpx        # used by FastAPI's TestClient (tests), not esp32_camera_client
+pyserial>=3.5

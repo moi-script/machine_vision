@@ -24,6 +24,11 @@ from config import settings as _settings
 
 CAMERA_IDS = ("front", "left", "right", "back")
 
+# The registration camera. A slot like the others (one owner, one source doc)
+# but never part of the four-view court grid.
+FACE_ID = "face"
+SLOT_IDS = CAMERA_IDS + (FACE_ID,)
+
 # Keys that identify *which* physical source a slot points at. Exactly one
 # combination of these is live at a time (a path xor an index); the other
 # must be cleared on write or a stale one left by a previous $set can hijack
@@ -43,6 +48,23 @@ _DEFAULTS: dict[str, dict] = {
     "back": {"kind": "file", "path": os.path.join(_VID_DIR, "Angle_4.mp4")},
 }
 
+
+def _default_for(camera_id: str) -> dict:
+    if camera_id == FACE_ID:
+        # udev gives the AERO-FACE board this name on the Pi; on a Windows dev
+        # box the laptop camera stands in.
+        if sys.platform == "win32":
+            return {"kind": "device", "index": 0}
+        return {"kind": "device", "path": "/dev/aero-face"}
+    if camera_id != "front" and sys.platform != "win32":
+        # left/right/back are ESP32-S3 boards with fixed udev names on the Pi.
+        # Windows dev boxes have no such devices, so they keep the bundled
+        # footage; front keeps its bundled default everywhere until the
+        # OV9281 is assigned explicitly.
+        return {"kind": "device", "path": f"/dev/aero-{camera_id}"}
+    return dict(_DEFAULTS[camera_id])
+
+
 _lock = threading.Lock()
 _cache: dict[str, dict] = {}
 
@@ -53,7 +75,7 @@ def _col():
 
 def get(camera_id: str) -> dict:
     """Current source for a slot. Falls back to the bundled stand-in."""
-    if camera_id not in CAMERA_IDS:
+    if camera_id not in SLOT_IDS:
         raise KeyError(camera_id)
     with _lock:
         if camera_id in _cache:
@@ -65,7 +87,7 @@ def get(camera_id: str) -> dict:
         pass  # Mongo down: the bundled default still lets the app run
     src = {k: v for k, v in (doc or {}).items() if k in ("kind", "path", "index", "label")}
     if not src:
-        src = dict(_DEFAULTS[camera_id])
+        src = _default_for(camera_id)
     # Normalise: the defaults are built with ".." segments, while the pickers
     # list absolute paths. Unnormalised, the two never compare equal and the UI
     # cannot show which source a slot is actually on.
@@ -78,7 +100,7 @@ def get(camera_id: str) -> dict:
 
 def set_source(camera_id: str, kind: str, path: str | None = None,
                index: int | None = None, label: str | None = None) -> dict:
-    if camera_id not in CAMERA_IDS:
+    if camera_id not in SLOT_IDS:
         raise KeyError(camera_id)
     if kind == "file":
         if not path or not os.path.exists(path):
@@ -121,20 +143,23 @@ def describe(camera_id: str) -> dict:
     return {**src, "name": f"device {src['index']}", "available": True}
 
 
-def _configure_v4l2(cap: "cv2.VideoCapture") -> "cv2.VideoCapture":
-    """Ask a V4L2 camera for MJPG at the configured resolution.
+def _configure_v4l2(cap: "cv2.VideoCapture",
+                    camera_id: str | None = None) -> "cv2.VideoCapture":
+    """Ask a V4L2 camera for MJPG at its slot's size.
 
-    Four uncompressed 1280x800 streams exceed the Pi 5's shared USB3
-    bandwidth and the later cameras simply fail to open. MJPG moves the
-    decode cost onto the CPU, which is the cheaper of the two problems.
+    Four uncompressed streams exceed the Pi 5's shared USB bandwidth, so MJPG
+    always. The size is per slot because the ESP32-S3 boards each advertise a
+    single fixed mode (settings.SLOT_FRAME_SIZE). Without a slot (the engine's
+    legacy path) the global FRAME_WIDTH x FRAME_HEIGHT applies.
 
     Best-effort: a camera that refuses a mode keeps its default, and the
-    frame size the pipeline sees comes from the frame itself, never from
-    these values.
+    frame size the pipeline sees comes from the frame itself.
     """
+    w, h = _settings.SLOT_FRAME_SIZE.get(
+        camera_id, (_settings.FRAME_WIDTH, _settings.FRAME_HEIGHT))
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, _settings.FRAME_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, _settings.FRAME_HEIGHT)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
     return cap
 
 
@@ -155,8 +180,8 @@ def open_capture(camera_id: str) -> cv2.VideoCapture:
             # under the other.
             if sys.platform == "win32":
                 return cv2.VideoCapture(src["index"], cv2.CAP_DSHOW)
-            return _configure_v4l2(cv2.VideoCapture(src["index"]))
-        return _configure_v4l2(cv2.VideoCapture(src["path"]))
+            return _configure_v4l2(cv2.VideoCapture(src["index"]), camera_id)
+        return _configure_v4l2(cv2.VideoCapture(src["path"]), camera_id)
     if not os.path.exists(src["path"]):
         raise FileNotFoundError(src["path"])
     return cv2.VideoCapture(src["path"])

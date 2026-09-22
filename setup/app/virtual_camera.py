@@ -38,6 +38,15 @@ _SOURCES: dict[str, str] = {
 _lock = threading.Lock()
 _frozen: dict[str, dict] = {}   # camera_id -> {"frame_id", "image", "at"}
 
+# How long grab() waits for a just-started worker to produce its first frame
+# before giving up. A worker's `.alive` flips True as soon as its thread
+# spawns, well before cap.read() has returned anything.
+STARTUP_WAIT_S = 2.0
+
+
+class CameraStarting(RuntimeError):
+    """A worker holds this device but hasn't produced a frame yet."""
+
 
 def source_path(camera_id: str) -> str:
     if camera_id not in _SOURCES:
@@ -64,6 +73,27 @@ def grab(camera_id: str, frame_index: int | None = None):
     The frame is cached under a generated id so a later POST can prove its
     clicked points refer to this exact image.
     """
+    # A running worker already holds this device. Opening it a second time
+    # fails on V4L2 (busy) or steals frames, so freeze its newest frame.
+    from app import pipeline
+    w = pipeline.get(camera_id)
+    if w is not None and w.alive:
+        # `.alive` flips True as soon as the worker's thread spawns, before
+        # cap.read() has produced anything - poll briefly rather than falling
+        # through to _open() and fighting the worker for the device.
+        deadline = time.time() + STARTUP_WAIT_S
+        live = w.latest_frame()
+        while live is None and time.time() < deadline:
+            time.sleep(0.05)
+            live = w.latest_frame()
+        if live is None:
+            raise CameraStarting(f"{camera_id} worker is starting - no frame yet")
+        frame_id = f"{camera_id}-live-{int(time.time() * 1000)}"
+        with _lock:
+            _frozen[camera_id] = {"frame_id": frame_id, "image": live,
+                                  "at": time.time(), "index": 0}
+        return frame_id, live
+
     cap = _open(camera_id)
     try:
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -99,6 +129,9 @@ def frozen(camera_id: str) -> dict | None:
 
 
 def frame_count(camera_id: str) -> int:
+    from app import sources
+    if sources.get(camera_id)["kind"] == "device":
+        return 0          # live devices have no length; don't open a busy one
     cap = _open(camera_id)
     try:
         return max(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), 0)

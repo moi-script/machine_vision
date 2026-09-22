@@ -1,0 +1,12 @@
+# AeroSense stable device names. Installed by install.sh to /etc/udev/rules.d/.
+# Camera boards carry their role as the USB serial string (firmware/README.md).
+# ID_V4L_CAPABILITIES (set by udev's v4l_id) picks the capture node; UVC can also expose a metadata node.
+SUBSYSTEM=="video4linux", ATTRS{serial}=="AERO-LEFT",  ENV{ID_V4L_CAPABILITIES}=="*:capture:*", SYMLINK+="aero-left",  GROUP="video", MODE="0660"
+SUBSYSTEM=="video4linux", ATTRS{serial}=="AERO-RIGHT", ENV{ID_V4L_CAPABILITIES}=="*:capture:*", SYMLINK+="aero-right", GROUP="video", MODE="0660"
+SUBSYSTEM=="video4linux", ATTRS{serial}=="AERO-BACK",  ENV{ID_V4L_CAPABILITIES}=="*:capture:*", SYMLINK+="aero-back",  GROUP="video", MODE="0660"
+SUBSYSTEM=="video4linux", ATTRS{serial}=="AERO-FACE",  ENV{ID_V4L_CAPABILITIES}=="*:capture:*", SYMLINK+="aero-face",  GROUP="video", MODE="0660"
+
+# Servo Arduino: genuine Arduino (2341), CH340 clone (1a86:7523), FTDI (0403:6001).
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", SYMLINK+="aero-servo", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="aero-servo", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="aero-servo", GROUP="dialout", MODE="0660"

@@ -1,0 +1,9 @@
+# /etc/aerosense/displays.conf - read by kiosk-launch.sh at every login.
+# Output names come from:  DISPLAY=:0 xrandr --listmonitors
+# Leave a value empty to auto-pick: the app goes on the first monitor xrandr
+# lists and the scoreboard on the second.
+APP_OUTPUT=""
+SCOREBOARD_OUTPUT=""
+# Touchscreen name from:  DISPLAY=:0 xinput list --name-only
+# Empty = first device whose name contains "touch" (case-insensitive).
+TOUCH_DEVICE=""

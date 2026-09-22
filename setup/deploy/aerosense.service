@@ -10,8 +10,7 @@ User=aerosense
 # Relative weight paths in config/settings.py only resolve from setup/.
 WorkingDirectory=/opt/aerosense/setup
 Environment=PYTHONUNBUFFERED=1
-# Bound to loopback: the ESP32-CAM integration is outbound-only
-# (app/esp32_camera_client.py GETs http://ESP32_CAM_IP/capture), so nothing
+# Bound to loopback: every device (cameras, servo) is USB on this Pi, so nothing
 # needs to reach this port from the LAN.
 ExecStart=/opt/aerosense/setup/.venv/bin/uvicorn app.server:app --host 127.0.0.1 --port 8000
 Restart=on-failure

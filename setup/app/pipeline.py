@@ -25,6 +25,13 @@ WHY MODELS ARE PER WORKER
 Ultralytics predict is not documented as thread-safe, and a shared model behind
 two threads fails as occasional wrong boxes rather than as a crash. These nets
 are 3-6 MB.
+
+WHY MODELS ARE FIXED PER SLOT
+A camera's job is decided by where it is mounted, not picked in the UI: the
+front camera watches the rally (flying shuttle + player pose), the three
+sideline/baseline cameras only need to call where the shuttle landed, and the
+face camera is raw because its frames feed face enrollment rather than a
+detector. See `SLOT_MODELS`.
 """
 from __future__ import annotations
 
@@ -67,6 +74,33 @@ MODELS: dict[str, dict] = {
         "label": "player pose",
     },
 }
+
+# Rig v2: what each slot runs is fixed by where the camera is, not picked in
+# the UI. front watches the rally (flying shuttle + the player's pose); the
+# sideline/baseline views only call where the shuttle landed. face is raw: its
+# frames feed face enrollment, not a detector.
+SLOT_MODELS: dict[str, list[str]] = {
+    "front": ["shuttle", "pose"],
+    "left": ["landed"],
+    "right": ["landed"],
+    "back": ["landed"],
+    "face": [],
+}
+
+
+def models_for(camera_id: str, raw: bool = False) -> list[str]:
+    if camera_id not in SLOT_MODELS:
+        raise ValueError(f"unknown camera {camera_id!r}")
+    return [] if raw else list(SLOT_MODELS[camera_id])
+
+
+def heads_for_tick(n_heads: int, tick: int, alternate: bool) -> list[int]:
+    """Which heads run on this inference tick. Alternating halves the per-frame
+    cost on the Pi at the price of each model seeing every other frame."""
+    if n_heads <= 1 or not alternate:
+        return list(range(n_heads))
+    return [tick % n_heads]
+
 
 BOX_COLOR = (0, 255, 255)
 HUD_COLOR = (255, 255, 255)
@@ -136,39 +170,50 @@ def _load(weights: str, imgsz: int, task: str, backend: str):
     return YOLO(out_dir, task=task)
 
 
+class _Head:
+    """One model on one camera: its config, weights, tracker state, last result."""
+
+    def __init__(self, key: str, backend: str, calib: dict | None):
+        self.key = key
+        self.cfg = dict(MODELS[key])
+        if backend == "ncnn" and key in settings.PI_IMGSZ:
+            self.cfg["imgsz"] = settings.PI_IMGSZ[key]
+        self.counter = (LandingCounter(calib["lines"])
+                        if key == "landed" and calib
+                        and calib.get("mode") == "lines" else None)
+        self.model = None
+        self.result = None            # (res, box, produced_at)
+
+    def crop_box(self, w: int, h: int):
+        c = self.cfg.get("crop")
+        if not c:
+            return None
+        return (int(c[0] * w), int(c[1] * h), int(c[2] * w), int(c[3] * h))
+
+
 class Worker:
     """Capture thread + inference thread + the newest annotated JPEG."""
 
-    def __init__(self, camera_id: str, model_key: str = "none",
-                 backend: str | None = None, target_fps: float = 30.0,
-                 top_n: int | None = None):
+    def __init__(self, camera_id: str, model_keys: list[str],
+                 backend: str | None = None, target_fps: float = 30.0):
         self.camera_id = camera_id
-        self.model_key = model_key
         self.backend = backend or DEFAULT_BACKEND
         self.target_fps = target_fps
-        self.cfg = dict(MODELS.get(model_key) or {})
-        # Pi: override the x86 input sizes (see settings.PI_IMGSZ).
-        if self.backend == "ncnn" and model_key in settings.PI_IMGSZ:
-            self.cfg["imgsz"] = settings.PI_IMGSZ[model_key]
-        if top_n is not None:
-            self.cfg["top_n"] = top_n
-
         # Calibration is read once at start: it changes when an operator saves
         # it, and restarting the worker is how that takes effect.
         self.calib = _load_calibration(camera_id)
-        self.counter = (LandingCounter(self.calib["lines"])
-                        if model_key == "landed" and self.calib
-                        and self.calib.get("mode") == "lines" else None)
+        self.heads = [_Head(k, self.backend, self.calib) for k in model_keys]
+        self.model_key = "+".join(model_keys) or "none"
+        self.label = " + ".join(h.cfg["label"] for h in self.heads) or "raw"
 
         self._stop = threading.Event()
         self._lock = threading.Lock()
-        self._frame = None            # newest raw frame, for the inference thread
+        self._frame = None            # newest raw frame, for inference + freezing
         self._frame_at = 0.0
-        self._result = None           # (boxes, keypoints_result, produced_at)
         self._jpeg: bytes | None = None
         self._stats = {"frames": 0, "detections": 0, "fps": 0.0,
                        "infer_fps": 0.0, "infer_ms": 0.0, "age_ms": 0.0,
-                       "error": None, "loading": True,
+                       "error": None, "loading": bool(self.heads),
                        "calibrated": bool(self.calib),
                        "landings": 0, "counts": {}, "last_call": None,
                        "active": None, "seeding": False}
@@ -205,22 +250,22 @@ class Worker:
         with self._lock:
             return self._jpeg
 
-    # ── crop helpers ─────────────────────────────────────────
-    def _crop_box(self, w: int, h: int):
-        c = self.cfg.get("crop")
-        if not c:
-            return None
-        return (int(c[0] * w), int(c[1] * h), int(c[2] * w), int(c[3] * h))
+    def latest_frame(self):
+        """Newest raw frame (a copy). Calibration freezes and face enrollment
+        read this so nothing opens a device this worker already holds."""
+        with self._lock:
+            return None if self._frame is None else self._frame.copy()
 
     # ── inference thread ─────────────────────────────────────
     def _infer_loop(self):
-        if self.model_key == "none":
+        if not self.heads:
             with self._lock:
                 self._stats["loading"] = False
             return
         try:
-            model = _load(self.cfg["weights"], self.cfg["imgsz"],
-                          self.cfg.get("task", "detect"), self.backend)
+            for h in self.heads:
+                h.model = _load(h.cfg["weights"], h.cfg["imgsz"],
+                                h.cfg.get("task", "detect"), self.backend)
         except Exception as exc:
             with self._lock:
                 self._stats["error"] = str(exc)
@@ -230,6 +275,8 @@ class Worker:
             self._stats["loading"] = False
 
         window: list[float] = []
+        tick = 0
+        alternate = self.camera_id == "front" and settings.FRONT_ALTERNATE
         while not self._stop.is_set():
             with self._lock:
                 frame = None if self._frame is None else self._frame.copy()
@@ -238,38 +285,40 @@ class Worker:
                 continue
 
             t0 = time.perf_counter()
-            box = self._crop_box(frame.shape[1], frame.shape[0])
-            src = frame[box[1]:box[3], box[0]:box[2]] if box else frame
-            try:
-                if self.counter is not None:
-                    # Track, not predict: stable ids are what make "is this a
-                    # new shuttle" answerable. Radius matching could not tell a
-                    # jittering box from a second shuttle.
-                    res = model.track(src, imgsz=self.cfg["imgsz"],
-                                      conf=self.cfg.get("conf", 0.25),
-                                      persist=True, tracker="bytetrack.yaml",
-                                      verbose=False)[0]
-                else:
-                    res = model.predict(src, imgsz=self.cfg["imgsz"],
-                                        conf=self.cfg.get("conf", 0.25),
-                                        classes=[0] if self.cfg.get("task") == "pose" else None,
-                                        verbose=False)[0]
-            except Exception as exc:
+            for i in heads_for_tick(len(self.heads), tick, alternate):
+                h = self.heads[i]
+                box = h.crop_box(frame.shape[1], frame.shape[0])
+                src = frame[box[1]:box[3], box[0]:box[2]] if box else frame
+                try:
+                    if h.counter is not None:
+                        # Track, not predict: stable ids are what make "is this
+                        # a new shuttle" answerable.
+                        res = h.model.track(src, imgsz=h.cfg["imgsz"],
+                                            conf=h.cfg.get("conf", 0.25),
+                                            persist=True, tracker="bytetrack.yaml",
+                                            verbose=False)[0]
+                    else:
+                        res = h.model.predict(src, imgsz=h.cfg["imgsz"],
+                                              conf=h.cfg.get("conf", 0.25),
+                                              classes=[0] if h.cfg.get("task") == "pose" else None,
+                                              verbose=False)[0]
+                except Exception as exc:
+                    with self._lock:
+                        self._stats["error"] = str(exc)
+                    return
                 with self._lock:
-                    self._stats["error"] = str(exc)
-                return
+                    h.result = (res, box, time.perf_counter())
+            tick += 1
             ms = (time.perf_counter() - t0) * 1000.0
             window.append(ms)
             if len(window) > 20:
                 window.pop(0)
-
             with self._lock:
-                self._result = (res, box, time.perf_counter())
                 self._stats["infer_ms"] = round(ms, 1)
                 self._stats["infer_fps"] = round(1000.0 / (sum(window) / len(window)), 1)
 
     # ── capture thread ───────────────────────────────────────
-    def _draw(self, frame, res, box):
+    def _draw(self, frame, head, res, box):
         """Draw the last inference onto the current frame."""
         if res is None:
             return 0
@@ -278,11 +327,11 @@ class Worker:
         order = sorted(range(len(res.boxes)),
                        key=lambda i: -float((res.boxes.xyxy[i][2] - res.boxes.xyxy[i][0]) *
                                             (res.boxes.xyxy[i][3] - res.boxes.xyxy[i][1])))
-        top_n = self.cfg.get("top_n")
+        top_n = head.cfg.get("top_n")
         if top_n:
             order = order[:top_n]
 
-        if self.cfg.get("task") == "pose":
+        if head.cfg.get("task") == "pose":
             # Skeleton lines from COCO's 17-keypoint topology.
             links = [(5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (5, 11), (6, 12),
                      (11, 12), (11, 13), (13, 15), (12, 14), (14, 16)]
@@ -304,7 +353,7 @@ class Worker:
             return len(order)
 
         n = 0
-        max_side = self.cfg.get("max_side")
+        max_side = head.cfg.get("max_side")
         for i in order:
             x1, y1, x2, y2 = (int(v) for v in res.boxes.xyxy[i].tolist())
             if max_side and max(x2 - x1, y2 - y1) > max_side:
@@ -355,36 +404,37 @@ class Worker:
                 with self._lock:
                     self._frame = frame          # hand the newest to inference
                     self._frame_at = started
-                    res = self._result
+                    results = [(h, h.result) for h in self.heads]
 
                 view = frame.copy()
                 age_ms = 0.0
                 n = 0
-                if res is not None:
-                    age_ms = (time.perf_counter() - res[2]) * 1000.0
-                    if self.counter is not None:
+                for h, res in results:
+                    if res is None:
+                        continue
+                    age_ms = max(age_ms, (time.perf_counter() - res[2]) * 1000.0)
+                    if h.counter is not None:
                         # Update first, then draw: the state of each shuttle
                         # (active / counted / pending) is what gets drawn.
-                        tracks = _landing_tracks(res[0], res[1],
-                                                 self.cfg.get("max_side"))
-                        for ev in self.counter.update(tracks, frames):
+                        tracks = _landing_tracks(res[0], res[1], h.cfg.get("max_side"))
+                        for ev in h.counter.update(tracks, frames):
                             with self._lock:
                                 self._stats["last_call"] = ev
-                        n = _draw_landings(view, tracks, self.counter)
+                        n += _draw_landings(view, tracks, h.counter)
                     else:
-                        n = self._draw(view, res[0], res[1])
+                        n += self._draw(view, h, res[0], res[1])
 
-                box = self._crop_box(view.shape[1], view.shape[0])
-                if box:
-                    cv2.rectangle(view, (box[0], box[1]), (box[2], box[3]), (90, 90, 90), 1)
+                for h in self.heads:
+                    box = h.crop_box(view.shape[1], view.shape[0])
+                    if box:
+                        cv2.rectangle(view, (box[0], box[1]), (box[2], box[3]), (90, 90, 90), 1)
 
-                # The saved calibration, drawn on every frame so the operator can
-                # see what the in/out calls are being measured against.
-                _draw_calibration(view, self.calib)
-
-                if self.counter is not None:
-                    _draw_counts(view, self.counter.counts, self.counter.active,
-                                 self.counter.seeding)
+                # Raw workers (calibration, face) stay clean: no overlay at all.
+                if self.heads:
+                    _draw_calibration(view, self.calib)
+                counter = next((h.counter for h in self.heads if h.counter), None)
+                if counter is not None:
+                    _draw_counts(view, counter.counts, counter.active, counter.seeding)
 
                 frames += 1
                 # Measured across the WHOLE cycle including the pacing sleep
@@ -400,10 +450,11 @@ class Worker:
 
                 with self._lock:
                     infer_ms = self._stats["infer_ms"]
-                cv2.putText(view,
-                            f"{self.camera_id}  {self.cfg.get('label','raw')}  "
-                            f"{fps:4.1f} fps  det={n}  age={age_ms:.0f}ms  inf={infer_ms:.0f}ms",
-                            (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.62, HUD_COLOR, 2, cv2.LINE_AA)
+                if self.heads:
+                    cv2.putText(view,
+                                f"{self.camera_id}  {self.label}  "
+                                f"{fps:4.1f} fps  det={n}  age={age_ms:.0f}ms  inf={infer_ms:.0f}ms",
+                                (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.62, HUD_COLOR, 2, cv2.LINE_AA)
 
                 ok_enc, buf = cv2.imencode(".jpg", view, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 if ok_enc:
@@ -412,11 +463,11 @@ class Worker:
                         self._stats.update(frames=frames, detections=n,
                                            fps=round(fps, 1),
                                            age_ms=round(age_ms, 1), error=None)
-                        if self.counter is not None:
-                            self._stats["landings"] = self.counter.total
-                            self._stats["counts"] = dict(self.counter.counts)
-                            self._stats["active"] = self.counter.active
-                            self._stats["seeding"] = self.counter.seeding
+                        if counter is not None:
+                            self._stats["landings"] = counter.total
+                            self._stats["counts"] = dict(counter.counts)
+                            self._stats["active"] = counter.active
+                            self._stats["seeding"] = counter.seeding
 
                 slack = min_dt - (time.perf_counter() - started)
                 if slack > 0:
@@ -532,12 +583,11 @@ _workers: dict[str, Worker] = {}
 _wlock = threading.Lock()
 
 
-def start(camera_id: str, model_key: str = "none", backend: str | None = None,
-          target_fps: float = 30.0, top_n: int | None = None) -> dict:
-    if model_key not in MODELS:
-        raise ValueError(f"unknown model {model_key!r}")
+def start(camera_id: str, raw: bool = False, backend: str | None = None,
+          target_fps: float = 30.0) -> dict:
+    keys = models_for(camera_id, raw)
     stop(camera_id)
-    w = Worker(camera_id, model_key, backend, target_fps, top_n)
+    w = Worker(camera_id, keys, backend, target_fps)
     with _wlock:
         _workers[camera_id] = w
     w.start()

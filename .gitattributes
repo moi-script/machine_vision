@@ -1,2 +1,7 @@
 setup/models/*.pt filter=lfs diff=lfs merge=lfs -text
 setup/models/*.onnx filter=lfs diff=lfs merge=lfs -text
+setup/deploy/*.sh text eol=lf
+setup/deploy/*.service text eol=lf
+setup/deploy/*.rules text eol=lf
+setup/deploy/*.desktop text eol=lf
+setup/deploy/*.conf* text eol=lf

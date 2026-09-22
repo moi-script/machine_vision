@@ -79,6 +79,20 @@ def _open_capture(source):
     return cv2.VideoCapture(source)
 
 
+def _open_engine_capture(use_slot: bool, source, width: int, height: int,
+                         grayscale: bool):
+    """The engine's camera. With the rig, that is the front slot, opened
+    exactly as the Cameras page opens it (per-slot MJPG size included)."""
+    if use_slot:
+        return _sources.open_capture("front")
+    cap = _open_capture(source)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    if grayscale and isinstance(source, int):
+        cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+    return cap
+
+
 def _iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -131,6 +145,12 @@ class DrillEngine:
         # start() -> _run() handshake so start() can raise synchronously.
         self._started_evt = threading.Event()
         self._start_error: str | None = None
+        # Servo aim config (Task 10) — refreshed from settings at (re)start.
+        from app.models import AimSettings
+        self._aim_cfg = AimSettings()
+        # Never let aim threads queue up: a wedged/silent servo port must not
+        # accumulate one blocked thread per shot (every 1.5s on hard).
+        self._aim_lock = threading.Lock()
 
     # ---- public state ----
     @property
@@ -430,6 +450,7 @@ class DrillEngine:
         self._person_conf = s.detection.personConf
         self._shuttle_conf = s.detection.shuttleConf
         self._reco_threshold = s.detection.faceMatchThreshold
+        self._aim_cfg = s.aim
         # ZONE_WEAK_THRESHOLD was bound at import into utils.scoring — patch it
         # on the module that actually holds it so weak-zone logic updates.
         import utils.scoring as scoring_mod
@@ -509,9 +530,19 @@ class DrillEngine:
         latest = frame_buffer.latest()
         if latest is not None and self._state != "idle":
             return latest
-        cap = _open_capture(CAMERA_INDEX)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+        # A Cameras-page pipeline worker may already hold the "front" device
+        # open — reuse its latest frame instead of contending for the device
+        # (opening it twice can fail, or steal frames from the live view).
+        from app import pipeline
+        w = pipeline.get("front")
+        if w is not None and w.alive:
+            frame = w.latest_frame()
+            if frame is not None:
+                return cv2.imencode(".jpg", frame)[1].tobytes()
+        try:
+            cap = _open_engine_capture(True, CAMERA_INDEX, FRAME_WIDTH, FRAME_HEIGHT, False)
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"camera unavailable: {exc}") from exc
         ok, frame = cap.read()
         cap.release()
         if not ok:
@@ -520,12 +551,30 @@ class DrillEngine:
 
     # ---- feeder (ported from main.py fire_feeder) ----
     def _fire_feeder(self, zone_name: str) -> None:
-        """Trigger the physical feeder machine. Currently just broadcasts the
-        event; wire this to GPIO / serial when moving to the Raspberry Pi."""
-        hub.broadcast({"type": "feeder", "zone": zone_name, "at": _iso()})
-        # GPIO example for Raspberry Pi later:
-        #   GPIO.output(FEEDER_PIN, GPIO.HIGH); time.sleep(0.1)
-        #   GPIO.output(FEEDER_PIN, GPIO.LOW)
+        """Aim the feeder at this zone (calibrated angles + random jitter) and
+        tell the UI. Aiming runs off the loop thread: the serial round-trip
+        must never stall frame processing."""
+        def _go():
+            from app import aim
+            got = None
+            if not self._aim_lock.acquire(blocking=False):
+                # An aim is already in flight (the servo port is slow or
+                # wedged and a previous shot's thread is still in the serial
+                # round-trip) — never queue another one behind it. Skip the
+                # move but still tell the UI the feeder fired.
+                hub.broadcast({"type": "feeder", "zone": zone_name,
+                               "x": None, "y": None, "at": _iso()})
+                return
+            try:
+                got = aim.aim_zone(zone_name, self._aim_cfg)
+            except Exception as exc:  # noqa: BLE001 - the drill never stops for the servo
+                print(f"[AIM] {exc}", flush=True)
+            finally:
+                self._aim_lock.release()
+            hub.broadcast({"type": "feeder", "zone": zone_name,
+                           "x": got[0] if got else None,
+                           "y": got[1] if got else None, "at": _iso()})
+        threading.Thread(target=_go, daemon=True, name="aim").start()
 
     # ---- shuttle detection (ported from main.py:54-157) ----
     def _load_shuttle_model(self) -> None:
@@ -615,6 +664,7 @@ class DrillEngine:
         # cards actually take effect — the "requires a restart" hint is real.
         cam_source, cam_width, cam_height, cam_grayscale = (
             CAMERA_INDEX, FRAME_WIDTH, FRAME_HEIGHT, GRAYSCALE)
+        use_slot = True
         # None -> build_homography() falls back to config.settings.COURT_CORNERS.
         court_corners = None
         try:
@@ -629,6 +679,7 @@ class DrillEngine:
             cam_source = self._norm_source(s.camera.source)
             cam_width, cam_height = s.camera.width, s.camera.height
             cam_grayscale = s.camera.grayscale
+            use_slot = s.camera.useFrontSlot
             self._reco_threshold = s.detection.faceMatchThreshold
             self._reco_grayscale = cam_grayscale
             # The Settings page / calibrate endpoint persists corners to Mongo.
@@ -636,6 +687,7 @@ class DrillEngine:
             # config constants, so calibration silently had no effect and every
             # court/zone overlay drew at the wrong place.
             court_corners = s.court.corners or None
+            self._aim_cfg = s.aim
         except Exception as exc:  # noqa: BLE001 - fall back to config constants
             hub.broadcast({"type": "error",
                             "message": f"[SETTINGS] using defaults: {exc}"})
@@ -656,11 +708,11 @@ class DrillEngine:
             return
 
         # ── Camera setup (inline open_camera(), substitution 1) ──────
-        cap = _open_capture(cam_source)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, cam_width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cam_height)
-        if cam_grayscale and isinstance(cam_source, int):
-            cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+        try:
+            cap = _open_engine_capture(use_slot, cam_source, cam_width,
+                                       cam_height, cam_grayscale)
+        except FileNotFoundError:
+            cap = cv2.VideoCapture()      # not opened -> "camera unavailable" below
 
         if not cap.isOpened():
             try:
@@ -814,6 +866,7 @@ class DrillEngine:
                 return_side_count = 0
 
             fps_times = []
+            read_failures = 0
 
             while True:
                 if self._stop_flag:
@@ -821,7 +874,18 @@ class DrillEngine:
 
                 ret, frame = cap.read()
                 if not ret:
+                    if use_slot and _sources.is_file("front") and read_failures < 3:
+                        # Bundled dev-rig clip hit EOF — rewind instead of
+                        # ending the drill, so a looping video source behaves
+                        # like a live feed for as long as the drill runs.
+                        # Bounded to 3 consecutive failures so a genuinely
+                        # dead source (not just an EOF) still ends the drill
+                        # instead of spinning forever.
+                        read_failures += 1
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        continue
                     break
+                read_failures = 0
 
                 if cam_grayscale and len(frame.shape) == 2:
                     frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)

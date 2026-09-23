@@ -180,3 +180,15 @@ SERVO_BAUD = 115200
 # same argument applies to `shuttle`. app/pipeline.py applies these only when
 # resolve_backend() picks ncnn.
 PI_IMGSZ = {"shuttle": 640, "landed": 640, "pose": 640}
+
+# --- Registration face camera ---
+# Two boards can serve /api/face-cam, and the UI does not care which one does:
+#   "usb"  -> the AERO-FACE ESP32-S3 board (udev /dev/aero-face, the "face" slot)
+#   "wifi" -> the ESP32-CAM station on the LAN at ESP32_CAM_IP
+#   "auto" -> USB when its device is present, else the ESP32-CAM if it answers
+FACE_CAM_SOURCE = "auto"
+# None turns the Wi-Fi camera off. Give the board a static IP / DHCP reservation.
+ESP32_CAM_IP = "10.200.33.50"
+ESP32_CAM_TIMEOUT_S = 5.0
+# The board's MJPEG preview runs on its own server; must match the sketch.
+ESP32_CAM_STREAM_PORT = 81

@@ -9,9 +9,10 @@ The rig is **v2** (shipped 2026-09-22): an OV9281 `front` camera plus four
 ESP32-S3 USB webcams on udev-stable names — `/dev/aero-left`, `-right`,
 `-back`, `-face` — and servo aiming through an Arduino at `/dev/aero-servo`.
 Each device has exactly one reader. Models are fixed per slot: `front` =
-shuttle + pose, `left`/`right`/`back` = landed shuttle, `face` = raw. The old
-Wi-Fi ESP32-CAM enrollment is gone; registration uses the USB face camera. A
-second monitor shows `/#/scoreboard`.
+shuttle + pose, `left`/`right`/`back` = landed shuttle, `face` = raw. Registration
+reads the USB face board, or a Wi-Fi ESP32-CAM station, behind the same
+`/api/face-cam/*` endpoints (`FACE_CAM_SOURCE` in `config/settings.py`; "auto"
+prefers USB). A second monitor shows `/#/scoreboard`.
 
 ## Where things are
 

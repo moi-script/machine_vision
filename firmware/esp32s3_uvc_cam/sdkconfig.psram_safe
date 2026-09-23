@@ -1,0 +1,6 @@
+# For boards that hang at "cpu_start: Multicore app" and are reset by the RTC
+# watchdog every ~7 s: the octal PSRAM does not settle at 80 MHz. Run it at
+# 40 MHz and skip the boot-time memory test. Layered after the role file, so
+# the role (serial string, frame size) is unchanged.
+CONFIG_SPIRAM_SPEED_40M=y
+CONFIG_SPIRAM_MEMTEST=n

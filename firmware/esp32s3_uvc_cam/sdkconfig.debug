@@ -1,0 +1,4 @@
+# Diagnostic overlay: debug-level logs from boot on, so a board that hangs
+# during startup shows which step it stopped in. Not for the rig.
+CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
+CONFIG_BOOTLOADER_LOG_LEVEL_DEBUG=y

@@ -1,0 +1,5 @@
+# Match the Arduino ESP32-S3 (qio_opi) build that boots on the board which
+# hangs with our defaults: quad-I/O flash, full 16 MB, 80 MHz.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y

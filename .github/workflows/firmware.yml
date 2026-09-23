@@ -92,6 +92,49 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: psram-safe-uvc-bins, path: bins/*.bin }
 
+  # Diagnostic builds (left role only) for a board that hangs at boot with
+  # the normal image. Each variant changes one thing toward the Arduino
+  # qio_opi build that does boot on it. Not for the rig.
+  uvc_debug:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: debug
+            idf: v5.3
+            overlays: "sdkconfig.debug"
+          - variant: debug-qio16
+            idf: v5.3
+            overlays: "sdkconfig.debug;sdkconfig.flash_qio16"
+          - variant: debug-idf55
+            idf: v5.5
+            overlays: "sdkconfig.debug"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build left (${{ matrix.variant }}, IDF ${{ matrix.idf }})
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ matrix.idf }}
+          target: esp32s3
+          path: firmware/esp32s3_uvc_cam
+          command: >-
+            idf.py -B build_${{ matrix.variant }}
+            -D SDKCONFIG=build_${{ matrix.variant }}/sdkconfig
+            -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.role.left;${{ matrix.overlays }}"
+            build &&
+            cd build_${{ matrix.variant }} &&
+            esptool.py --chip esp32s3 merge_bin -o ../aero-left-${{ matrix.variant }}.bin @flash_args
+      - name: Role and debug logging really took
+        run: |
+          H=firmware/esp32s3_uvc_cam/build_${{ matrix.variant }}/config/sdkconfig.h
+          grep -q '"AERO-LEFT"' $H
+          grep -q "CONFIG_LOG_DEFAULT_LEVEL 4" $H
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debug-uvc-${{ matrix.variant }}
+          path: firmware/esp32s3_uvc_cam/aero-left-${{ matrix.variant }}.bin
+
   servo:
     runs-on: ubuntu-latest
     steps:

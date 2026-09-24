@@ -181,6 +181,12 @@ SERVO_BAUD = 115200
 # resolve_backend() picks ncnn.
 PI_IMGSZ = {"shuttle": 640, "landed": 640, "pose": 640}
 
+# CPU threads per NCNN model. NCNN defaults to every core, so each started
+# camera ran its models on all 4 at once - a current spike that browned out a
+# marginal supply and reset the Pi. 2 is also faster here (landed @ 640:
+# 91 ms vs 120 ms at 4) because 4-thread nets fight each other for cores.
+PI_NCNN_THREADS = 2
+
 # --- Registration face camera ---
 # Two boards can serve /api/face-cam, and the UI does not care which one does:
 #   "usb"  -> the AERO-FACE ESP32-S3 board (udev /dev/aero-face, the "face" slot)

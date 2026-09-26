@@ -150,6 +150,9 @@ def main() -> int:
                     help="write the annotated feed to this mp4 so the tracking "
                          "can be reviewed frame by frame")
     ap.add_argument("--debug", action="store_true", help="draw rejected blobs")
+    ap.add_argument("--speed", type=float, default=1.0,
+                    help="playback speed for a video file in the window: 1.0 is "
+                         "real time, 0.5 slow motion, 0 as fast as the CPU goes")
     ap.add_argument("--no-display", action="store_true", help="headless benchmark")
     args = ap.parse_args()
 
@@ -197,6 +200,12 @@ def main() -> int:
     ncand = deque(maxlen=60)
     trail = deque(maxlen=25)   # recent path, so a trajectory is visible at a glance
     t_start = time.time()
+    # Pace a video file to its own fps in the window; the detector runs in a
+    # few ms, so unpaced playback is far too fast to follow the shuttle.
+    frame_s = 0.0
+    if not isinstance(src, int) and args.speed > 0:
+        frame_s = 1.0 / ((cap.get(cv2.CAP_PROP_FPS) or 30.0) * args.speed)
+    t_next = time.perf_counter()
 
     try:
         while True:
@@ -287,7 +296,13 @@ def main() -> int:
                 continue
             cv2.imshow("shuttle motion prototype", show)
 
-            k = cv2.waitKey(1) & 0xFF
+            wait_ms = 1
+            if frame_s and not paused:
+                t_next += frame_s
+                wait_ms = max(1, int((t_next - time.perf_counter()) * 1000))
+            else:
+                t_next = time.perf_counter()   # no catch-up burst after a pause
+            k = cv2.waitKey(wait_ms) & 0xFF
             if k == ord("q"):
                 break
             if k == ord(" "):

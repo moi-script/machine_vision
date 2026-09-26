@@ -106,3 +106,37 @@ def test_engine_motion_shuttle_uses_the_pose_boxes():
     got = [e._motion_shuttle(_with_shuttle(bg, x, y), everywhere)
            for x, y in _flight()]
     assert all(g is None for g in got)
+
+
+def _flicker(bg, rng):
+    """A spot on a fluorescent tube: its brightness changes irregularly every
+    frame. (MOG2 alone already learns a REGULAR on/off flash as background;
+    irregular flicker is what gets through it.)"""
+    f = bg.copy()
+    f[60:72, 200:212] = rng.integers(90, 256)
+    return f
+
+
+def test_flicker_makes_false_blobs_without_the_filter():
+    bg, rng = _court(), np.random.default_rng(3)
+    det = ShuttleMotionDetector(flicker_max=1.0)
+    blobs = [len(det.update(_flicker(bg, rng))[2]) for _ in range(200)]
+    assert sum(blobs[WARMUP:]) > 20
+
+
+def test_the_filter_removes_flicker_blobs():
+    bg, rng = _court(), np.random.default_rng(3)
+    det = ShuttleMotionDetector()
+    blobs = [len(det.update(_flicker(bg, rng))[2]) for _ in range(200)]
+    assert sum(blobs[WARMUP:]) == 0
+
+
+def test_a_shuttle_still_tracks_past_a_flickering_light():
+    bg, rng = _court(), np.random.default_rng(3)
+    det = ShuttleMotionDetector()
+    for _ in range(WARMUP + 30):
+        det.update(_flicker(bg, rng))
+    path = _flight()
+    out = [det.update(_with_shuttle(_flicker(bg, rng), x, y))[0]
+           for x, y in path]
+    assert sum(1 for r in out if r and r[2] == "det") >= len(path) - 6

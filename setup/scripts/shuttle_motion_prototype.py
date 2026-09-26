@@ -140,6 +140,10 @@ def main() -> int:
     ap.add_argument("--min-speed", type=float, default=6.0,
                     help="px/frame a confirmed track must average. A shuttle in "
                          "flight moves; noise and slow drift do not.")
+    ap.add_argument("--flicker-max", type=float, default=0.3,
+                    help="ignore pixels that were 'moving' in more than this "
+                         "share of recent frames: flickering lights, white "
+                         "lines under them. 1.0 turns the filter off.")
     ap.add_argument("--warmup", type=int, default=30,
                     help="frames to let MOG2 learn the background before scoring")
     ap.add_argument("--exclude-players", action="store_true",
@@ -173,7 +177,7 @@ def main() -> int:
         min_area=args.min_area, max_area=args.max_area,
         max_aspect=args.max_aspect, gate=args.gate, max_coast=args.max_coast,
         scale=args.scale, confirm=args.confirm, tent_gate=args.tent_gate,
-        min_speed=args.min_speed)
+        min_speed=args.min_speed, flicker_max=args.flicker_max)
 
     players = None
     if args.exclude_players:

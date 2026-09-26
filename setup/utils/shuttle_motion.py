@@ -14,8 +14,10 @@
 # THE PIPELINE
 #   1. MOG2 background subtraction        -> foreground mask
 #   2. contour filter (area + aspect)     -> shuttle-sized moving blobs
-#   3. player-box rejection               -> drop limbs/rackets
-#   4. Kalman constant-velocity filter    -> pick the candidate on the
+#   3. flicker suppression                -> drop pixels that keep "moving"
+#                                            in the same place (lights, lines)
+#   4. player-box rejection               -> drop limbs/rackets
+#   5. Kalman constant-velocity filter    -> pick the candidate on the
 #                                            trajectory, coast through misses
 #
 # KNOWN LIMITS
@@ -78,7 +80,7 @@ class ShuttleMotionDetector:
     def __init__(self, min_area=12, max_area=1200, max_aspect=6.0,
                  gate=140.0, max_coast=8, history=350, var_threshold=28,
                  player_pad=14, scale=0.5, confirm=4, tent_gate=55.0,
-                 min_speed=6.0):
+                 min_speed=6.0, flicker_decay=0.05, flicker_max=0.3):
         # MOG2 relearns the background continuously, so slow lighting drift is
         # absorbed.
         #
@@ -116,6 +118,21 @@ class ShuttleMotionDetector:
         self.min_speed = min_speed     # px/frame; a hovering blob is not a shuttle
         self.tentative = []            # [{"pts": [(x, y)], "last": frame_i}]
         self.frame_i = 0
+
+        # --- noise suppression --------------------------------------------
+        # Fluorescent tubes flicker at 100-120 Hz, which a 30 fps camera sees
+        # as a different brightness every frame; white lines and bright
+        # patches under them flicker with them. To MOG2 all of that is
+        # motion, and a long tube flickering along its length even looks like
+        # a smooth path. What separates it from a shuttle is WHERE: the
+        # flicker keeps coming back to the same pixels, while a shuttle
+        # crosses any one spot for a frame or two. `heat` is a running average
+        # of the foreground mask (memory ~1/flicker_decay frames); pixels
+        # hotter than `flicker_max` are ignored. A shuttle crossing a pixel for
+        # 3 frames heats it to 1 - 0.95**3 = 0.14, well under 0.3.
+        self.flicker_decay = flicker_decay
+        self.flicker_max = flicker_max
+        self.heat = None
 
     def _candidates(self, mask, player_boxes):
         """Shuttle-sized blobs surviving the area / aspect / player filters."""
@@ -227,6 +244,14 @@ class ShuttleMotionDetector:
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.k_open)
         # Close small gaps so a blurred streak stays one contour.
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self.k_close)
+        if self.flicker_max < 1.0:
+            if self.heat is None:
+                self.heat = np.zeros(mask.shape, np.float32)
+            # Heat is learned from the unsuppressed mask, so a flickering spot
+            # stays hot for as long as it keeps flickering.
+            cv2.accumulateWeighted((mask > 0).astype(np.float32), self.heat,
+                                   self.flicker_decay)
+            mask[self.heat > self.flicker_max] = 0
 
         cands, rejected = self._candidates(mask, player_boxes)
         pred = self.track.predict()

@@ -19,7 +19,7 @@ class CameraSettings(BaseModel):
 
 
 class DetectionSettings(BaseModel):
-    shuttleSource: Literal["local", "serverless", "off"] = cfg.SHUTTLE_SOURCE
+    shuttleSource: Literal["local", "serverless", "motion", "off"] = cfg.SHUTTLE_SOURCE
     personConf: float = cfg.PERSON_CONFIDENCE
     ankleConf: float = cfg.ANKLE_CONFIDENCE
     shuttleConf: float = cfg.SHUTTLE_CONFIDENCE

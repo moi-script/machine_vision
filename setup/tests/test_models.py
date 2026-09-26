@@ -6,7 +6,7 @@ def test_settings_defaults_populate_from_config():
     assert s.drill.intervals["easy"] == 5.0
     assert s.drill.intervals["hard"] == 1.5
     assert len(s.court.corners) == 4
-    assert s.detection.shuttleSource in ("local", "serverless", "off")
+    assert s.detection.shuttleSource in ("local", "serverless", "motion", "off")
 
 
 def test_camera_source_accepts_int_or_str():

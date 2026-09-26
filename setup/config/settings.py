@@ -30,12 +30,17 @@ DIFFICULTY = {
 #   "local"      → models/shuttlecock.pt, ~99 ms/frame on this CPU, fully offline
 #   "serverless" → Roboflow direct model over HTTP (FREE, but 1.2–3.9 s/frame
 #                  measured round trip, so the drill loop runs at well under 1 FPS)
+#   "motion"     → MOG2 background subtraction + Kalman tracking of the one
+#                  shuttle in flight (utils/shuttle_motion.py). No neural
+#                  network: ~10 ms/frame on the i3, and the only option cheap
+#                  enough for the front camera on the Raspberry Pi next to pose.
+#                  Needs the front camera fixed in place.
 #   "off"        → no shuttle detection (player/zone logic only)
 #
 # "local" no longer needs a paid Roboflow export: scripts/train_shuttlecock.py
 # trains our own yolov8n on the free dataset export. Current weights are epoch 55
 # of that run — mAP50 0.898, mAP50-95 0.389 on a 20-image val split.
-SHUTTLE_SOURCE        = "local"
+SHUTTLE_SOURCE        = "motion"
 
 # Path used when SHUTTLE_SOURCE = "local". Relative to the repo root, so run
 # main.py / uvicorn from C:\thesis\setup or this will not resolve.

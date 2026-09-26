@@ -26,6 +26,7 @@ from utils.zones import (
 )
 from utils.scoring import PlayerScores
 from utils.shuttle_worker import ShuttleWorker
+from utils.shuttle_motion import ShuttleMotionDetector
 from utils.display import (
     draw_court_zone, draw_net, draw_zones, draw_player, draw_shuttle,
     draw_scoreboard, draw_status, draw_fps,
@@ -142,6 +143,8 @@ class DrillEngine:
         self._shuttle_ready = False    # local weights loaded and usable
         self._shuttle_serverless = False
         self._serverless_warned = False
+        # "motion" source: a fresh background model per drill, built in _run().
+        self._shuttle_motion: ShuttleMotionDetector | None = None
         # start() -> _run() handshake so start() can raise synchronously.
         self._started_evt = threading.Event()
         self._start_error: str | None = None
@@ -649,6 +652,27 @@ class DrillEngine:
 
         return None  # "off" or no local weights
 
+    def _motion_shuttle(self, frame, detections):
+        """Motion-source shuttle position -> (cx, cy) or None.
+
+        Runs inline on EVERY frame, never through ShuttleWorker: MOG2 and the
+        Kalman lock both depend on consecutive frames, and the worker's
+        "freshest frame wins" dropping would break that. The pose boxes are
+        passed in so a moving arm or racket is not mistaken for the shuttle.
+        A Kalman "coast" (shuttle briefly hidden) still counts as a position —
+        the scoring only needs the trajectory, not a hit on every frame."""
+        det = self._shuttle_motion
+        if det is None:
+            return None
+        try:
+            res, _mask, _cands, _rej = det.update(
+                frame, [d["box"] for d in detections])
+        except Exception:  # noqa: BLE001 - never kill the drill loop
+            return None
+        if res is None:
+            return None
+        return res[0], res[1]
+
     # ---- the loop (adapted from main.py run()) ----
     @staticmethod
     def _norm_source(src):
@@ -739,8 +763,14 @@ class DrillEngine:
             # Load shuttle detection source (local weights / serverless / off).
             self._load_shuttle_model()
 
-            shuttle_worker = ShuttleWorker(self._detect_shuttle)
-            shuttle_worker.start()
+            if self._shuttle_source == "motion":
+                # New background per drill: the last drill's model may have
+                # learned a different scene (camera moved, lights changed).
+                self._shuttle_motion = ShuttleMotionDetector()
+            else:
+                self._shuttle_motion = None
+                shuttle_worker = ShuttleWorker(self._detect_shuttle)
+                shuttle_worker.start()
 
             scores = self._scores
             prev_shuttle_cy = None
@@ -898,7 +928,6 @@ class DrillEngine:
                 if len(fps_times) >= 2:
                     span = fps_times[-1] - fps_times[0]
                     self._fps = (len(fps_times) - 1) / span if span > 0 else 0.0
-                draw_fps(frame)
 
                 # Difficulty may have changed live via set_difficulty()
                 interval = self._interval
@@ -909,6 +938,7 @@ class DrillEngine:
                     # still reads as a calibrated court instead of a bare camera
                     # image. Player boxes/skeletons are absent by design here:
                     # detection doesn't run while paused.
+                    draw_fps(frame)
                     draw_court_zone(frame)
                     draw_net(frame)
                     draw_zones(frame)
@@ -950,11 +980,17 @@ class DrillEngine:
                     if _do_skill_log:
                         self._log_skill_frame(d, court_ankle)
 
-                # ── Detect shuttle (async) ───────────────────────────
-                shuttle_worker.submit(frame.copy())
-                shuttle_pos = shuttle_worker.get()
+                # ── Detect shuttle ───────────────────────────────────
+                # Before any overlay is drawn: to the motion detector, changing
+                # HUD text is motion.
+                if shuttle_worker is None:
+                    shuttle_pos = self._motion_shuttle(frame, detections)
+                else:
+                    shuttle_worker.submit(frame.copy())
+                    shuttle_pos = shuttle_worker.get()
 
                 # ── Draw base overlays ───────────────────────────────
+                draw_fps(frame)
                 draw_court_zone(frame)
                 draw_net(frame)
 

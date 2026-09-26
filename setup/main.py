@@ -83,6 +83,9 @@ elif SHUTTLE_SOURCE == "serverless":
     print("[MODEL] Shuttle detection via Roboflow serverless model "
           "(free; runs on a background thread so the drill loop stays smooth, "
           "but shuttle position lags ~1s behind live).")
+elif SHUTTLE_SOURCE == "motion":
+    print("[MODEL] SHUTTLE_SOURCE='motion' runs in the API drill engine "
+          "(run_server.py) only — shuttle detection off in main.py.")
 else:
     print("[MODEL] Shuttle detection off (player/zone logic only).")
 

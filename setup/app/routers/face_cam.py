@@ -1,10 +1,16 @@
-"""Face enrollment from the registration camera (the AERO-FACE USB board).
+"""Face enrollment from the registration camera.
 
-Replaces the Wi-Fi ESP32-CAM station. The board is now a UVC webcam on the Pi,
-opened as the "face" slot by one raw pipeline worker; the preview stream and
-the enrollment grabs both read that worker, so they never fight over the
-device. Enrollment behaviour is unchanged: several good shots, L2-averaged into
-the single faceEmbedding the player schema holds.
+Two boards can serve it, behind the same endpoints so the UI never changes:
+
+- "usb":  the AERO-FACE ESP32-S3 board, a UVC webcam on the Pi opened as the
+  "face" slot by one raw pipeline worker. The preview stream and the enrollment
+  grabs both read that worker, so they never fight over the device.
+- "wifi": the ESP32-CAM station on the LAN (app/esp32_camera_client.py). The
+  browser shows the board's own MJPEG preview; enrollment GETs /capture.
+
+settings.FACE_CAM_SOURCE picks one, or "auto" prefers USB and falls back to
+Wi-Fi. Enrollment behaviour is the same for both: several good shots,
+L2-averaged into the single faceEmbedding the player schema holds.
 """
 from __future__ import annotations
 
@@ -14,8 +20,11 @@ import time
 import cv2
 import numpy as np
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import RedirectResponse
 
 from app import db, face, pipeline, sources
+from app import esp32_camera_client as esp32
+from config import settings as _settings
 
 router = APIRouter(prefix="/api/face-cam", tags=["face-cam"])
 
@@ -25,12 +34,58 @@ SHOT_GAP_S = 0.2          # distinct frames at 10 fps, not the same one thrice
 FIRST_FRAME_WAIT_S = 3.0
 
 
+def _wanted() -> str:
+    return getattr(_settings, "FACE_CAM_SOURCE", "auto")
+
+
+def _mode() -> str | None:
+    """Which board serves registration right now: "usb", "wifi" or None.
+
+    USB is recognised by its device (udev names the AERO-FACE board by its USB
+    serial), Wi-Fi by the ESP32-CAM answering /health at ESP32_CAM_IP."""
+    want = _wanted()
+    if want != "wifi" and sources.describe(sources.FACE_ID).get("available"):
+        return "usb"
+    if want != "usb" and esp32.check_health():
+        return "wifi"
+    return None
+
+
+def _unavailable() -> HTTPException:
+    want = _wanted()
+    usb = f"USB face camera ({sources.describe(sources.FACE_ID).get('name', 'face')})"
+    wifi = f"Wi-Fi ESP32-CAM ({getattr(_settings, 'ESP32_CAM_IP', None) or 'no IP set'})"
+    if want == "usb":
+        return HTTPException(503, f"face camera not connected - {usb}")
+    if want == "wifi":
+        return HTTPException(503, f"face camera unreachable - {wifi}")
+    return HTTPException(503, f"no face camera - neither {usb} nor {wifi} is up")
+
+
 def _ensure_worker():
     w = pipeline.get(sources.FACE_ID)
     if w is None or not w.alive:
         pipeline.start(sources.FACE_ID, raw=True, target_fps=15.0)
         w = pipeline.get(sources.FACE_ID)
     return w
+
+
+def _usb_grabber():
+    w = _ensure_worker()
+    deadline = time.time() + FIRST_FRAME_WAIT_S
+    while w.latest_frame() is None and time.time() < deadline:
+        time.sleep(0.05)
+    if w.latest_frame() is None:
+        raise HTTPException(502, "face camera gave no frame")
+    return w.latest_frame
+
+
+def _wifi_grab():
+    try:
+        jpeg = esp32.capture_snapshot(use_flash=False)
+    except esp32.ESP32CaptureError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
 
 
 def _grayscale() -> bool:
@@ -49,14 +104,20 @@ def _average_embedding(embeddings: list[list[float]]) -> list[float]:
 
 @router.get("/health")
 def health():
-    d = sources.describe(sources.FACE_ID)
-    if not d.get("available"):
-        raise HTTPException(503, f"face camera not connected ({d.get('name', 'face')})")
-    return {"status": "ok", "streamUrl": "/api/face-cam/stream", "source": d}
+    mode = _mode()
+    if mode is None:
+        raise _unavailable()
+    if mode == "wifi":
+        return {"status": "ok", "mode": "wifi", "streamUrl": esp32.stream_url(),
+                "source": {"name": "esp32-cam", "ip": _settings.ESP32_CAM_IP}}
+    return {"status": "ok", "mode": "usb", "streamUrl": "/api/face-cam/stream",
+            "source": sources.describe(sources.FACE_ID)}
 
 
 @router.get("/stream")
 def stream():
+    if _mode() == "wifi":
+        return RedirectResponse(esp32.stream_url())
     _ensure_worker()
     from app.routers.cameras import stream as camera_stream
     return camera_stream(sources.FACE_ID)
@@ -64,6 +125,7 @@ def stream():
 
 @router.post("/stop")
 def stop():
+    # A no-op in Wi-Fi mode: the board's preview ends when the page closes it.
     pipeline.stop(sources.FACE_ID)
     return {"running": False}
 
@@ -77,12 +139,10 @@ def enroll(pid: str, shots: int = MIN_GOOD_SHOTS):
     if shots < 1:
         raise HTTPException(400, "shots must be >= 1")
 
-    w = _ensure_worker()
-    deadline = time.time() + FIRST_FRAME_WAIT_S
-    while w.latest_frame() is None and time.time() < deadline:
-        time.sleep(0.05)
-    if w.latest_frame() is None:
-        raise HTTPException(502, "face camera gave no frame")
+    mode = _mode()
+    if mode is None:
+        raise _unavailable()
+    grab = _usb_grabber() if mode == "usb" else _wifi_grab
 
     grayscale = _grayscale()
     embeddings: list[list[float]] = []
@@ -90,7 +150,7 @@ def enroll(pid: str, shots: int = MIN_GOOD_SHOTS):
     attempts = 0
     while len(embeddings) < shots and attempts < max(MAX_ATTEMPTS, shots * 3):
         attempts += 1
-        img = w.latest_frame()
+        img = grab()
         time.sleep(SHOT_GAP_S)
         if img is None:
             continue
@@ -110,5 +170,5 @@ def enroll(pid: str, shots: int = MIN_GOOD_SHOTS):
     final = _average_embedding(embeddings) if len(embeddings) > 1 else embeddings[0]
     db.players().update_one({"_id": pid},
                             {"$set": {"faceEmbedding": final, "faceEnrolled": True}})
-    return {"ok": True, "shotsUsed": len(embeddings), "attempts": attempts,
+    return {"ok": True, "mode": mode, "shotsUsed": len(embeddings), "attempts": attempts,
             "imageDataUrl": f"data:image/jpeg;base64,{best_jpeg_b64}" if best_jpeg_b64 else None}

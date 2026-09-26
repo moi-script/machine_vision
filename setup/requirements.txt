@@ -14,5 +14,5 @@ fastapi
 uvicorn[standard]
 pymongo
 python-multipart
-httpx        # used by FastAPI's TestClient (tests), not esp32_camera_client
+httpx        # app/esp32_camera_client.py (Wi-Fi face camera) and TestClient
 pyserial>=3.5

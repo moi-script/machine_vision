@@ -51,3 +51,23 @@ idf.py -B build_left -D SDKCONFIG=build_left/sdkconfig \
 2. Wiring: X (pan) servo signal → **D9**, Y (tilt) servo signal → **D10**. Servo power from a separate 5-6 V supply, with its GND tied to the Arduino GND.
 3. Test in Serial Monitor at 115200, line ending *Newline*: you should see `READY`. Type `A 60 120` and expect `OK 60 120`.
 4. Plug it into the Pi. It appears as `/dev/aero-servo`.
+
+## Wi-Fi ESP32-CAM (optional face camera)
+A second registration camera next to the USB `aero-face` board. The backend
+picks between them with `FACE_CAM_SOURCE` in `setup/config/settings.py`:
+`"auto"` (default) uses USB when `/dev/aero-face` exists, otherwise the
+ESP32-CAM if it answers at `ESP32_CAM_IP`.
+
+The sketch is not in this repo. Whatever you flash must serve:
+
+| Endpoint | Reply |
+|---|---|
+| `GET http://<ip>/capture` | 200, one raw JPEG (`?flash=1` may turn the LED on; the backend never asks) |
+| `GET http://<ip>/health` | 200 |
+| `GET http://<ip>:81/stream` | MJPEG (`multipart/x-mixed-replace`) for the preview |
+
+Face detection and recognition run on the Pi (YuNet + SFace), so on the board:
+- **no on-board face detection drawing** - boxes or dots in the JPEG spoil the embedding;
+- **SVGA 800x600** (same as `aero-face`), JPEG quality ~10-12, colour; the Pi does grayscale;
+- `grab_mode = CAMERA_GRAB_LATEST`, so each `/capture` is a fresh frame;
+- a static IP or DHCP reservation, on the same LAN as the Pi.

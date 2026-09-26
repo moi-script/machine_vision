@@ -155,6 +155,30 @@ def _export_dir(path: str, imgsz: int, backend: str) -> str:
     return f"{os.path.splitext(path)[0]}_{imgsz}_{backend}_model"
 
 
+def _cap_ncnn_threads(n: int) -> None:
+    """Make every ncnn.Net created from now on use `n` threads.
+
+    Ultralytics builds the Net itself, and NCNN fixes a layer's thread count
+    when the weights load - setting opt.num_threads afterwards is ignored. So
+    the cap has to be in place at construction, which means swapping the class
+    ultralytics instantiates. Idempotent.
+    """
+    try:
+        import ncnn
+    except ImportError:
+        return
+    base = getattr(ncnn.Net, "_aero_base", ncnn.Net)
+
+    class _Net(base):
+        _aero_base = base
+
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.opt.num_threads = n
+
+    ncnn.Net = _Net
+
+
 def _load(weights: str, imgsz: int, task: str, backend: str):
     """Load, exporting for `backend` on first use for that imgsz."""
     from ultralytics import YOLO
@@ -167,6 +191,8 @@ def _load(weights: str, imgsz: int, task: str, backend: str):
     if not os.path.isdir(out_dir):
         produced = YOLO(path).export(format=backend, imgsz=imgsz, half=False)
         os.rename(str(produced), out_dir)
+    if backend == "ncnn":
+        _cap_ncnn_threads(settings.PI_NCNN_THREADS)
     return YOLO(out_dir, task=task)
 
 
@@ -277,11 +303,17 @@ class Worker:
         window: list[float] = []
         tick = 0
         alternate = self.camera_id == "front" and settings.FRONT_ALTERNATE
+        seen_at = None
         while not self._stop.is_set():
             with self._lock:
-                frame = None if self._frame is None else self._frame.copy()
+                fresh = self._frame is not None and self._frame_at != seen_at
+                frame = self._frame.copy() if fresh else None
+                seen_at = self._frame_at
+            # Only new frames. A 640 model outruns a 30 fps camera, and
+            # re-running it on the frame it just saw pinned the CPU for
+            # nothing (and fed the tracker duplicate frames).
             if frame is None:
-                time.sleep(0.01)
+                time.sleep(0.005)
                 continue
 
             t0 = time.perf_counter()
